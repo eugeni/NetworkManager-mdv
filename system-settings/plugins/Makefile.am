@@ -9,7 +9,7 @@ SUBDIRS+=ifcfg-suse
 endif
 
 if TARGET_MANDRIVA
-SUBDIRS+=ifcfg-rh
+SUBDIRS+=ifcfg-mdv
 endif
 
 if TARGET_DEBIAN

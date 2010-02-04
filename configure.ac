@@ -461,6 +461,7 @@ system-settings/plugins/ifupdown/Makefile
 system-settings/plugins/ifcfg-rh/Makefile
 system-settings/plugins/ifcfg-rh/tests/Makefile
 system-settings/plugins/ifcfg-rh/tests/network-scripts/Makefile
+system-settings/plugins/ifcfg-mdv/Makefile
 system-settings/plugins/ifcfg-suse/Makefile
 system-settings/plugins/keyfile/Makefile
 system-settings/plugins/keyfile/io/Makefile
