@@ -1,0 +1,14 @@
+The ifcfg-mdv is a BETA plugin, which adds support for Mandriva-specific
+variables in /etc/sysconfig/network-scripts/ifcfg-* files to network
+manager.
+
+This is not a production-ready version, nor it is officially supported as of
+now. However, it works fine for me, so - at least in theory - it should work
+for some of you out there as well.
+
+To get the most up-to-date patch against mainstream NetworkManager code,
+just run:
+# git diff master mdv
+
+The 'patches' directory contains mostly up-to-date patches to be used with
+Mandriva's networkmanager package.
