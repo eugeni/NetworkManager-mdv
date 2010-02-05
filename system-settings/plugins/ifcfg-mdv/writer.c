@@ -16,6 +16,7 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  * Copyright (C) 2009 Red Hat, Inc.
+ * Mandriva-specific changes by Eugeni Dodonov <eugeni@mandriva.com>.
  */
 
 #include <ctype.h>
