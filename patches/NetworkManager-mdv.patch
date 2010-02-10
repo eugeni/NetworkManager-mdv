@@ -30,6 +30,62 @@ index 778f18a..98ef517 100644
  system-settings/plugins/ifcfg-suse/Makefile
  system-settings/plugins/keyfile/Makefile
  system-settings/plugins/keyfile/io/Makefile
+diff --git a/patches/NetworkManager-mdv.patch b/patches/NetworkManager-mdv.patch
+new file mode 100644
+index 0000000..e69de29
+diff --git a/patches/README b/patches/README
+new file mode 100644
+index 0000000..897e768
+--- /dev/null
++++ b/patches/README
+@@ -0,0 +1,2 @@
++This directory contains patches that should be applied to Mandriva's
++networkmanager package source.
+diff --git a/patches/networkmanager.patch b/patches/networkmanager.patch
+new file mode 100644
+index 0000000..5b53814
+--- /dev/null
++++ b/patches/networkmanager.patch
+@@ -0,0 +1,39 @@
++Index: SPECS/networkmanager.spec
++===================================================================
++--- SPECS/networkmanager.spec	(revision 499084)
+++++ SPECS/networkmanager.spec	(working copy)
++@@ -19,7 +19,7 @@
++ %if %{snapshot}
++ Release:	%mkrel 0.%{snapshot}.1
++ %else
++-Release:        %mkrel 1
+++Release:        %mkrel 2
++ %endif
++ Group:		System/Base
++ License:	GPLv2+
++@@ -32,6 +32,7 @@
++ # Fedora patches
++ Patch2:		explain-dns1-dns2.patch
++ # (fhimpe) Make it use correct location for dhclient lease files
+++Patch3:		NetworkManager-mdv.patch
++ BuildRequires:	libnl-devel wpa_supplicant libiw-devel dbus-glib-devel
++ BuildRequires:	hal-devel >= 0.5.0 nss-devel intltool
++ BuildRequires:	gtk-doc ext2fs-devel
++@@ -129,6 +130,8 @@
++ %prep
++ %setup -q -n %{rname}-%{version}
++ %patch2 -p1 -b .explain-dns1-dns2
+++# add mandriva configuration
+++%patch3 -p1
++ 
++ %build
++ autoreconf -fis
++@@ -150,7 +153,7 @@
++ 
++ cat > %{buildroot}%{_sysconfdir}/NetworkManager/nm-system-settings.conf << EOF
++ [main]
++-plugins=ifcfg-fedora
+++plugins=ifcfg-mdv
++ EOF
++ 
++ # create a VPN directory
 diff --git a/system-settings/plugins/Makefile.am b/system-settings/plugins/Makefile.am
 index 94f7560..95010c6 100644
 --- a/system-settings/plugins/Makefile.am
@@ -1316,10 +1372,10 @@ index 0000000..d820a26
 +
 diff --git a/system-settings/plugins/ifcfg-mdv/reader.c b/system-settings/plugins/ifcfg-mdv/reader.c
 new file mode 100644
-index 0000000..b0a44e8
+index 0000000..dba29ec
 --- /dev/null
 +++ b/system-settings/plugins/ifcfg-mdv/reader.c
-@@ -0,0 +1,3222 @@
+@@ -0,0 +1,3271 @@
 +/* -*- Mode: C; tab-width: 4; indent-tabs-mode: t; c-basic-offset: 4 -*- */
 +/* NetworkManager system settings service
 + *
@@ -1354,6 +1410,7 @@ index 0000000..b0a44e8
 +#include <sys/ioctl.h>
 +#include <unistd.h>
 +#include <netinet/ether.h>
++#include <netinet/in.h>
 +
 +#ifndef __user
 +#define __user
@@ -1505,6 +1562,41 @@ index 0000000..b0a44e8
 +	}
 +
 +	return NM_SETTING (s_con);
++}
++
++static gboolean
++discover_mac_address(char *device, GByteArray **array, GError **error)
++{
++	int fd, ret;
++	struct ifreq ifr;
++
++	g_return_val_if_fail (device != NULL, FALSE);
++	g_return_val_if_fail (array != NULL, FALSE);
++	g_return_val_if_fail (*array == NULL, FALSE);
++	g_return_val_if_fail (error != NULL, FALSE);
++	g_return_val_if_fail (*error == NULL, FALSE);
++
++	fd = socket(AF_INET, SOCK_DGRAM, 0);
++	if (fd < 0) {
++		g_set_error(error, ifcfg_plugin_error_quark(), errno,
++				"Unable to discover MAC address: socket error");
++		return FALSE;
++	}
++
++	ifr.ifr_addr.sa_family = AF_INET;
++	strncpy(ifr.ifr_name, device, IFNAMSIZ-1);
++
++	ret = ioctl(fd, SIOCGIFHWADDR, &ifr);
++	if (ret < 0) {
++		g_set_error(error, ifcfg_plugin_error_quark(), errno,
++				"Unable to discover MAC address: ioctl error");
++		return FALSE;
++	}
++	close(fd);
++
++	*array = g_byte_array_sized_new (ETH_ALEN);
++	g_byte_array_append (*array, (guint8 *) ifr.ifr_hwaddr.sa_data, ETH_ALEN);
++	return TRUE;
 +}
 +
 +static gboolean
@@ -3936,6 +4028,7 @@ index 0000000..b0a44e8
 +make_wireless_setting (shvarFile *ifcfg,
 +                       gboolean nm_controlled,
 +                       char **unmanaged,
++                       char *device,
 +                       GError **error)
 +{
 +	NMSettingWireless *s_wireless;
@@ -3945,6 +4038,10 @@ index 0000000..b0a44e8
 +	s_wireless = NM_SETTING_WIRELESS (nm_setting_wireless_new ());
 +
 +	if (read_mac_address (ifcfg, &array, error)) {
++		/* if we don't have a HWADDR saved in ifcfg file, try to discover it manually */
++		if (!array) {
++			discover_mac_address(device, &array, error);
++		}
 +		if (array) {
 +			g_object_set (s_wireless, NM_SETTING_WIRELESS_MAC_ADDRESS, array, NULL);
 +
@@ -4124,6 +4221,7 @@ index 0000000..b0a44e8
 +                                shvarFile *ifcfg,
 +                                gboolean nm_controlled,
 +                                char **unmanaged,
++                                char *device,
 +                                GError **error)
 +{
 +	NMConnection *connection = NULL;
@@ -4149,7 +4247,7 @@ index 0000000..b0a44e8
 +	}
 +
 +	/* Wireless */
-+	wireless_setting = make_wireless_setting (ifcfg, nm_controlled, unmanaged, error);
++	wireless_setting = make_wireless_setting (ifcfg, nm_controlled, unmanaged, device, error);
 +	if (!wireless_setting) {
 +		g_object_unref (connection);
 +		return NULL;
@@ -4213,6 +4311,7 @@ index 0000000..b0a44e8
 +                    gboolean nm_controlled,
 +                    char **unmanaged,
 +                    NMSetting8021x **s_8021x,
++                    char *device,
 +                    GError **error)
 +{
 +	NMSettingWired *s_wired;
@@ -4235,6 +4334,10 @@ index 0000000..b0a44e8
 +	}
 +
 +	if (read_mac_address (ifcfg, &mac, error)) {
++		/* if we don't have a HWADDR saved in ifcfg file, try to discover it manually */
++		if (!mac) {
++			discover_mac_address(device, &mac, error);
++		}
 +		if (mac) {
 +			g_object_set (s_wired, NM_SETTING_WIRED_MAC_ADDRESS, mac, NULL);
 +
@@ -4284,6 +4387,7 @@ index 0000000..b0a44e8
 +                             shvarFile *ifcfg,
 +                             gboolean nm_controlled,
 +                             char **unmanaged,
++                             char *device,
 +                             GError **error)
 +{
 +	NMConnection *connection = NULL;
@@ -4310,7 +4414,7 @@ index 0000000..b0a44e8
 +	}
 +	nm_connection_add_setting (connection, con_setting);
 +
-+	wired_setting = make_wired_setting (ifcfg, file, nm_controlled, unmanaged, &s_8021x, error);
++	wired_setting = make_wired_setting (ifcfg, file, nm_controlled, unmanaged, &s_8021x, device, error);
 +	if (!wired_setting) {
 +		g_object_unref (connection);
 +		return NULL;
@@ -4387,6 +4491,7 @@ index 0000000..b0a44e8
 +	NMSetting *s_ip4, *s_ip6;
 +	const char *ifcfg_name = NULL;
 +	gboolean nm_controlled = TRUE;
++	char *device;
 +
 +	g_return_val_if_fail (filename != NULL, NULL);
 +	g_return_val_if_fail (unmanaged != NULL, NULL);
@@ -4419,28 +4524,28 @@ index 0000000..b0a44e8
 +		return NULL;
 +	}
 +
++	/* Read the device */
++	device = svGetValue (parsed, "DEVICE", FALSE);
++	if (!device) {
++		g_set_error (error, ifcfg_plugin_error_quark (), 0,
++					 "File '%s' had neither TYPE nor DEVICE keys.", filename);
++		goto done;
++	}
++
++	if (!strcmp (device, "lo")) {
++		*ignore_error = TRUE;
++		g_set_error (error, ifcfg_plugin_error_quark (), 0,
++					 "Ignoring loopback device config.");
++		g_free (device);
++		goto done;
++	}
++
 +	type = svGetValue (parsed, "TYPE", FALSE);
 +	if (!type) {
-+		char *device;
 +
 +		/* If no type, if the device has wireless extensions, it's wifi,
 +		 * otherwise it's ethernet.
 +		 */
-+		device = svGetValue (parsed, "DEVICE", FALSE);
-+		if (!device) {
-+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
-+			             "File '%s' had neither TYPE nor DEVICE keys.", filename);
-+			goto done;
-+		}
-+
-+		if (!strcmp (device, "lo")) {
-+			*ignore_error = TRUE;
-+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
-+			             "Ignoring loopback device config.");
-+			g_free (device);
-+			goto done;
-+		}
-+
 +		if (!test_type) {
 +			/* Test wireless extensions */
 +			if (is_wireless_device (device))
@@ -4455,7 +4560,6 @@ index 0000000..b0a44e8
 +			type = g_strdup (test_type);
 +		}
 +
-+		g_free (device);
 +	}
 +
 +	nmc = svGetValue (parsed, "NM_CONTROLLED", FALSE);
@@ -4471,9 +4575,9 @@ index 0000000..b0a44e8
 +	}
 +
 +	if (!strcasecmp (type, TYPE_ETHERNET))
-+		connection = wired_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, error);
++		connection = wired_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error);
 +	else if (!strcasecmp (type, TYPE_WIRELESS))
-+		connection = wireless_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, error);
++		connection = wireless_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error);
 +	else {
 +		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 +		             "Unknown connection type '%s'", type);
@@ -4485,6 +4589,7 @@ index 0000000..b0a44e8
 +	}
 +
 +	g_free (type);
++	g_free (device);
 +
 +	/* Don't bother reading the connection fully if it's unmanaged */
 +	if (!connection || *unmanaged)
