@@ -32,6 +32,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <netinet/ether.h>
+#include <netinet/in.h>
 
 #ifndef __user
 #define __user
@@ -183,6 +184,42 @@ make_connection_setting (const char *file,
 	}
 
 	return NM_SETTING (s_con);
+}
+
+static gboolean
+discover_mac_address(char *device, GByteArray **array, GError **error)
+{
+	int fd, ret;
+	struct ifreq ifr;
+
+	g_return_val_if_fail (device != NULL, FALSE);
+	g_return_val_if_fail (array != NULL, FALSE);
+	g_return_val_if_fail (*array == NULL, FALSE);
+	g_return_val_if_fail (error != NULL, FALSE);
+	g_return_val_if_fail (*error == NULL, FALSE);
+
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0) {
+		g_set_error(error, ifcfg_plugin_error_quark, errno,
+				"Unable to discover MAC address: socket error");
+		return FALSE;
+	}
+
+	}
+	ifr.ifr_addr.sa_family = AF_INET;
+	strncpy(ifr.ifr_name, device, IFNAMSIZ-1);
+
+	ret = ioctl(fd, SIOCGIFHWADDR, &ifr);
+	if (ret < 0) {
+		g_set_error(error, ifcfg_plugin_error_quark, errno,
+				"Unable to discover MAC address: ioctl error");
+		return FALSE;
+	}
+	close(fd);
+
+	*array = g_byte_array_sized_new (ETH_ALEN);
+	g_byte_array_append (*array, (guint8 *) ifr.ifr_hwaddr.sa_data, ETH_ALEN);
+	return TRUE;
 }
 
 static gboolean
@@ -2614,6 +2651,7 @@ static NMSetting *
 make_wireless_setting (shvarFile *ifcfg,
                        gboolean nm_controlled,
                        char **unmanaged,
+                       char *device,
                        GError **error)
 {
 	NMSettingWireless *s_wireless;
@@ -2623,6 +2661,10 @@ make_wireless_setting (shvarFile *ifcfg,
 	s_wireless = NM_SETTING_WIRELESS (nm_setting_wireless_new ());
 
 	if (read_mac_address (ifcfg, &array, error)) {
+		/* if we don't have a HWADDR saved in ifcfg file, try to discover it manually */
+		if (!array) {
+			discover_mac_address(device, &array, error);
+		}
 		if (array) {
 			g_object_set (s_wireless, NM_SETTING_WIRELESS_MAC_ADDRESS, array, NULL);
 
@@ -2802,6 +2844,7 @@ wireless_connection_from_ifcfg (const char *file,
                                 shvarFile *ifcfg,
                                 gboolean nm_controlled,
                                 char **unmanaged,
+                                char *device,
                                 GError **error)
 {
 	NMConnection *connection = NULL;
@@ -2827,7 +2870,7 @@ wireless_connection_from_ifcfg (const char *file,
 	}
 
 	/* Wireless */
-	wireless_setting = make_wireless_setting (ifcfg, nm_controlled, unmanaged, error);
+	wireless_setting = make_wireless_setting (ifcfg, nm_controlled, unmanaged, device, error);
 	if (!wireless_setting) {
 		g_object_unref (connection);
 		return NULL;
@@ -2891,6 +2934,7 @@ make_wired_setting (shvarFile *ifcfg,
                     gboolean nm_controlled,
                     char **unmanaged,
                     NMSetting8021x **s_8021x,
+                    char *device,
                     GError **error)
 {
 	NMSettingWired *s_wired;
@@ -2913,6 +2957,10 @@ make_wired_setting (shvarFile *ifcfg,
 	}
 
 	if (read_mac_address (ifcfg, &mac, error)) {
+		/* if we don't have a HWADDR saved in ifcfg file, try to discover it manually */
+		if (!array) {
+			discover_mac_address(device, &mac, error);
+		}
 		if (mac) {
 			g_object_set (s_wired, NM_SETTING_WIRED_MAC_ADDRESS, mac, NULL);
 
@@ -2962,6 +3010,7 @@ wired_connection_from_ifcfg (const char *file,
                              shvarFile *ifcfg,
                              gboolean nm_controlled,
                              char **unmanaged,
+                             char *device,
                              GError **error)
 {
 	NMConnection *connection = NULL;
@@ -2988,7 +3037,7 @@ wired_connection_from_ifcfg (const char *file,
 	}
 	nm_connection_add_setting (connection, con_setting);
 
-	wired_setting = make_wired_setting (ifcfg, file, nm_controlled, unmanaged, &s_8021x, error);
+	wired_setting = make_wired_setting (ifcfg, file, nm_controlled, unmanaged, &s_8021x, device, error);
 	if (!wired_setting) {
 		g_object_unref (connection);
 		return NULL;
@@ -3065,6 +3114,7 @@ connection_from_file (const char *filename,
 	NMSetting *s_ip4, *s_ip6;
 	const char *ifcfg_name = NULL;
 	gboolean nm_controlled = TRUE;
+	char *device;
 
 	g_return_val_if_fail (filename != NULL, NULL);
 	g_return_val_if_fail (unmanaged != NULL, NULL);
@@ -3097,28 +3147,28 @@ connection_from_file (const char *filename,
 		return NULL;
 	}
 
+	/* Read the device */
+	device = svGetValue (parsed, "DEVICE", FALSE);
+	if (!device) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+					 "File '%s' had neither TYPE nor DEVICE keys.", filename);
+		goto done;
+	}
+
+	if (!strcmp (device, "lo")) {
+		*ignore_error = TRUE;
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+					 "Ignoring loopback device config.");
+		g_free (device);
+		goto done;
+	}
+
 	type = svGetValue (parsed, "TYPE", FALSE);
 	if (!type) {
-		char *device;
 
 		/* If no type, if the device has wireless extensions, it's wifi,
 		 * otherwise it's ethernet.
 		 */
-		device = svGetValue (parsed, "DEVICE", FALSE);
-		if (!device) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
-			             "File '%s' had neither TYPE nor DEVICE keys.", filename);
-			goto done;
-		}
-
-		if (!strcmp (device, "lo")) {
-			*ignore_error = TRUE;
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
-			             "Ignoring loopback device config.");
-			g_free (device);
-			goto done;
-		}
-
 		if (!test_type) {
 			/* Test wireless extensions */
 			if (is_wireless_device (device))
@@ -3133,7 +3183,6 @@ connection_from_file (const char *filename,
 			type = g_strdup (test_type);
 		}
 
-		g_free (device);
 	}
 
 	nmc = svGetValue (parsed, "NM_CONTROLLED", FALSE);
@@ -3149,9 +3198,9 @@ connection_from_file (const char *filename,
 	}
 
 	if (!strcasecmp (type, TYPE_ETHERNET))
-		connection = wired_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, error);
+		connection = wired_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error);
 	else if (!strcasecmp (type, TYPE_WIRELESS))
-		connection = wireless_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, error);
+		connection = wireless_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error);
 	else {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 		             "Unknown connection type '%s'", type);
@@ -3163,6 +3212,7 @@ connection_from_file (const char *filename,
 	}
 
 	g_free (type);
+	g_free (device);
 
 	/* Don't bother reading the connection fully if it's unmanaged */
 	if (!connection || *unmanaged)
