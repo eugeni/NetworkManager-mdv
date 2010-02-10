@@ -200,18 +200,17 @@ discover_mac_address(char *device, GByteArray **array, GError **error)
 
 	fd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (fd < 0) {
-		g_set_error(error, ifcfg_plugin_error_quark, errno,
+		g_set_error(error, ifcfg_plugin_error_quark(), errno,
 				"Unable to discover MAC address: socket error");
 		return FALSE;
 	}
 
-	}
 	ifr.ifr_addr.sa_family = AF_INET;
 	strncpy(ifr.ifr_name, device, IFNAMSIZ-1);
 
 	ret = ioctl(fd, SIOCGIFHWADDR, &ifr);
 	if (ret < 0) {
-		g_set_error(error, ifcfg_plugin_error_quark, errno,
+		g_set_error(error, ifcfg_plugin_error_quark(), errno,
 				"Unable to discover MAC address: ioctl error");
 		return FALSE;
 	}
@@ -2958,7 +2957,7 @@ make_wired_setting (shvarFile *ifcfg,
 
 	if (read_mac_address (ifcfg, &mac, error)) {
 		/* if we don't have a HWADDR saved in ifcfg file, try to discover it manually */
-		if (!array) {
+		if (!mac) {
 			discover_mac_address(device, &mac, error);
 		}
 		if (mac) {
