@@ -12,6 +12,7 @@
 ### BEGIN INIT INFO
 # Provides: networkmanager
 # Required-Start: $network
+# Should-Start: $named
 # Required-Stop: $network
 # Default-Start: 3 4 5
 # Short-Description: Daemon for automatically switching to best network connection.
@@ -45,10 +46,6 @@ start()
 {
 	echo $"Setting network parameters... "
 	sysctl -e -p /etc/sysctl.conf >/dev/null 2>&1
-
-	if [ ! -e /var/lock/subsys/named ]; then
-		service named start >/dev/null 2>&1
-	fi
 
 	echo -n $"Starting NetworkManager daemon: "
 	daemon --check $servicename $processname --pid-file=$pidfile
