@@ -58,6 +58,7 @@
 #include "utils.h"
 
 #include "reader.h"
+#include "parse_wpa_supplicant_conf.h"
 
 #define PLUGIN_PRINT(pname, fmt, args...) \
 	{ g_message ("   " pname ": " fmt, ##args); }
@@ -251,6 +252,62 @@ read_mac_address (shvarFile *ifcfg, GByteArray **array, GError **error)
 	*array = g_byte_array_sized_new (ETH_ALEN);
 	g_byte_array_append (*array, (guint8 *) mac->ether_addr_octet, ETH_ALEN);
 	return TRUE;
+}
+
+static GByteArray *
+parse_ssid(char *value, GError **error)
+{
+	gsize ssid_len = 0, value_len = strlen (value);
+	char *p = value, *tmp;
+	char buf[33];
+	GByteArray *a;
+
+	ssid_len = value_len;
+	if (   (value_len >= 2)
+	    && (value[0] == '"')
+	    && (value[value_len - 1] == '"')) {
+		/* Strip the quotes and unescape */
+		p = value + 1;
+		value[value_len - 1] = '\0';
+		svUnescape (p);
+		ssid_len = strlen (p);
+	} else if ((value_len > 2) && (strncmp (value, "0x", 2) == 0)) {
+		/* Hex representation */
+		if (value_len % 2) {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				     "Invalid SSID '%s' size (looks like hex but length not multiple of 2)",
+				     value);
+			return NULL;
+		}
+
+		p = value + 2;
+		while (*p) {
+			if (!isxdigit (*p)) {
+				g_set_error (error, ifcfg_plugin_error_quark (), 0,
+					     "Invalid SSID '%s' character (looks like hex SSID but '%c' isn't a hex digit)",
+					     value, *p);
+				return NULL;
+			}
+			p++;
+		}
+
+		tmp = utils_hexstr2bin (value + 2, value_len - 2);
+		ssid_len  = (value_len - 2) / 2;
+		memcpy (buf, tmp, ssid_len);
+		p = &buf[0];
+	}
+
+	if (ssid_len > 32 || ssid_len == 0) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			     "Invalid SSID '%s' (size %zu not between 1 and 32 inclusive)",
+			     value, ssid_len);
+		return NULL;
+	}
+
+	a = g_byte_array_sized_new (ssid_len);
+	if (a)
+		g_byte_array_append (a, (const guint8 *) p, ssid_len);
+	return a;
 }
 
 static void
@@ -1801,7 +1858,7 @@ error:
 }
 
 static gboolean
-fill_wpa_ciphers (shvarFile *ifcfg,
+fill_wpa_ciphers (WPANetwork *wpan,
                   NMSettingWirelessSecurity *wsec,
                   gboolean group,
                   gboolean adhoc)
@@ -1810,7 +1867,11 @@ fill_wpa_ciphers (shvarFile *ifcfg,
 	char **list = NULL, **iter;
 	int i = 0;
 
-	p = value = svGetValue (ifcfg, group ? "CIPHER_GROUP" : "CIPHER_PAIRWISE", TRUE);
+	value = ifcfg_mdv_wpa_network_get_val (wpan, group ? "group" : "pairwise");
+	if (!value)
+		return TRUE;
+
+	value = p = g_strdup (value);
 	if (!value)
 		return TRUE;
 
@@ -1854,7 +1915,7 @@ fill_wpa_ciphers (shvarFile *ifcfg,
 			nm_setting_wireless_security_add_group (wsec, "wep40");
 		else {
 			PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: ignoring invalid %s cipher '%s'",
-			             group ? "CIPHER_GROUP" : "CIPHER_PAIRWISE",
+			             group ? "group" : "pairwise",
 			             *iter);
 		}
 	}
@@ -1868,12 +1929,11 @@ fill_wpa_ciphers (shvarFile *ifcfg,
 #define WPA_PMK_LEN 32
 
 static char *
-parse_wpa_psk (shvarFile *ifcfg,
+parse_wpa_psk (WPANetwork *wpan,
                const char *file,
                const GByteArray *ssid,
                GError **error)
 {
-	shvarFile *keys_ifcfg;
 	char *psk = NULL, *p, *hashed = NULL;
 	gboolean quoted = FALSE;
 
@@ -1883,16 +1943,7 @@ parse_wpa_psk (shvarFile *ifcfg,
 	 * the passphrase contains spaces.
 	 */
 
-	/* Try to get keys from the "shadow" key file */
-	keys_ifcfg = utils_get_keys_ifcfg (file, FALSE);
-	if (keys_ifcfg) {
-		psk = svGetValue (keys_ifcfg, "WPA_PSK", TRUE);
-		svCloseFile (keys_ifcfg);
-	}
-
-	/* Fall back to the original ifcfg */
-	if (!psk)
-		psk = svGetValue (ifcfg, "WPA_PSK", TRUE);
+	psk = ifcfg_mdv_wpa_network_get_val (wpan, "psk");
 
 	if (!psk) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
@@ -1900,7 +1951,7 @@ parse_wpa_psk (shvarFile *ifcfg,
 		return NULL;
 	}
 
-	p = psk;
+	psk = p = g_strdup (psk);
 
 	if (p[0] == '"' && psk[strlen (psk) - 1] == '"')
 		quoted = TRUE;
@@ -2467,6 +2518,7 @@ error:
 
 static NMSetting *
 make_wpa_setting (shvarFile *ifcfg,
+		  WPANetwork *wpan,
                   const char *file,
                   const GByteArray *ssid,
                   gboolean adhoc,
@@ -2478,43 +2530,45 @@ make_wpa_setting (shvarFile *ifcfg,
 
 	wsec = NM_SETTING_WIRELESS_SECURITY (nm_setting_wireless_security_new ());
 
-	value = svGetValue (ifcfg, "KEY_MGMT", FALSE);
-	if (!value)
-		goto error; /* Not WPA or Dynamic WEP */
 
 	/* Pairwise and Group ciphers */
-	fill_wpa_ciphers (ifcfg, wsec, FALSE, adhoc);
-	fill_wpa_ciphers (ifcfg, wsec, TRUE, adhoc);
+	fill_wpa_ciphers (wpan, wsec, FALSE, adhoc);
+	fill_wpa_ciphers (wpan, wsec, TRUE, adhoc);
 
 	/* WPA and/or RSN */
 	if (adhoc) {
 		/* Ad-Hoc mode only supports WPA proto for now */
 		nm_setting_wireless_security_add_proto (wsec, "wpa");
 	} else {
-		char *allow_wpa, *allow_rsn;
+		char *proto;
 
-		allow_wpa = svGetValue (ifcfg, "WPA_ALLOW_WPA", FALSE);
-		allow_rsn = svGetValue (ifcfg, "WPA_ALLOW_WPA2", FALSE);
+		proto = ifcfg_mdv_wpa_network_get_val(wpan, "proto");
 
-		if (allow_wpa && svTrueValue (ifcfg, "WPA_ALLOW_WPA", TRUE))
-			nm_setting_wireless_security_add_proto (wsec, "wpa");
-		if (allow_rsn && svTrueValue (ifcfg, "WPA_ALLOW_WPA2", TRUE))
-			nm_setting_wireless_security_add_proto (wsec, "rsn");
+		if (proto) {
+			if (strstr (proto, "WPA"))
+				nm_setting_wireless_security_add_proto (wsec, "wpa");
+			if (strstr (proto, "RSN"))
+				nm_setting_wireless_security_add_proto (wsec, "rsn");
+			if (nm_setting_wireless_security_get_num_protos (wsec) == 0)
+				PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: ignoring invalid proto '%s'", proto);
+		} else {
 
-		/* If neither WPA_ALLOW_WPA or WPA_ALLOW_WPA2 were present, default
-		 * to both WPA and RSN allowed.
-		 */
-		if (!allow_wpa && !allow_rsn) {
+			/* 
+			 * Default to both WPA and RSN allowed.
+			 */
 			nm_setting_wireless_security_add_proto (wsec, "wpa");
 			nm_setting_wireless_security_add_proto (wsec, "rsn");
 		}
-
-		g_free (allow_wpa);
-		g_free (allow_rsn);
 	}
 
+	value = ifcfg_mdv_wpa_network_get_val (wpan, "key_mgmt");
+	/*
+	 * Can NM support two alternative methods?
+	 */
+	if (!value)
+		value = "WPA-PSK";
 	if (!strcmp (value, "WPA-PSK")) {
-		psk = parse_wpa_psk (ifcfg, file, ssid, error);
+		psk = parse_wpa_psk (wpan, file, ssid, error);
 		if (!psk)
 			goto error;
 		g_object_set (wsec, NM_SETTING_WIRELESS_SECURITY_PSK, psk, NULL);
@@ -2545,16 +2599,16 @@ make_wpa_setting (shvarFile *ifcfg,
 		goto error;
 	}
 
-	g_free (value);
 	return (NMSetting *) wsec;
 
 error:
-	g_free (value);
 	if (wsec)
 		g_object_unref (wsec);
 	return NULL;
 }
 
+#if 0
+// LEAP does not seem to be supported by Mandriva
 static NMSetting *
 make_leap_setting (shvarFile *ifcfg,
                    const char *file,
@@ -2612,6 +2666,7 @@ error:
 		g_object_unref (wsec);
 	return NULL;
 }
+#endif
 
 static NMSetting *
 make_wireless_security_setting (shvarFile *ifcfg,
@@ -2621,29 +2676,75 @@ make_wireless_security_setting (shvarFile *ifcfg,
                                 NMSetting8021x **s_8021x,
                                 GError **error)
 {
-	NMSetting *wsec;
+	NMSetting *wsec = NULL; /* unencrypted by default */
+	char *driver;
+	WPAConfig *wpac = NULL;
+	WPANetwork *wpan = NULL;
 
-	if (!adhoc) {
-		wsec = make_leap_setting (ifcfg, file, error);
+	/*
+	 * Mandriva saves WPA parameters directly in wpa_supplicant.conf
+	 */
+	driver = svGetValue (ifcfg, "WIRELESS_WPA_DRIVER", FALSE);
+	if (driver) {
+		g_free (driver);
+
+		wpac = ifcfg_mdv_wpa_config("/etc/wpa_supplicant.conf");
+		if (wpac) {
+			gboolean found = FALSE;
+
+			ifcfg_mdv_wpa_config_rewind(wpac);
+			while (!found && (wpan = ifcfg_mdv_wpa_config_next(wpac)) != NULL) {
+				GByteArray *b_ssid = NULL;
+				gchar *w_ssid = ifcfg_mdv_wpa_network_get_val(wpan, "ssid");
+
+				if (w_ssid)
+					b_ssid = parse_ssid(w_ssid, error);
+
+				if (b_ssid)
+					if (b_ssid->len == ssid->len && memcmp(b_ssid->data, ssid->data, ssid->len) == 0) {
+						g_byte_array_unref(b_ssid);
+						found = TRUE;
+				       }
+			}
+		} else {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				     "WIRELESS_WPA_DRIVER set but /etc/wpa_supplicant.conf missing");
+			goto error;
+		}
+
+		if (!wpan) {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				     "WIRELESS_WPA_DRIVER set but SSID missing in /etc/wpa_supplicant.conf");
+			goto error;
+		}
+	}
+
+	if (wpan) {
+#if 0
+		// LEAP does not seem to be supported by Mandriva
+		if (!adhoc) {
+			wsec = make_leap_setting (ifcfg, file, error);
+			if (wsec)
+				return wsec;
+			else if (*error)
+				goto error;
+		}
+#endif
+
+		wsec = make_wpa_setting (ifcfg, wpan, file, ssid, adhoc, s_8021x, error);
 		if (wsec)
 			return wsec;
 		else if (*error)
-			return NULL;
+			goto error;
 	}
-
-	wsec = make_wpa_setting (ifcfg, file, ssid, adhoc, s_8021x, error);
-	if (wsec)
-		return wsec;
-	else if (*error)
-		return NULL;
 
 	wsec = make_wep_setting (ifcfg, file, error);
 	if (wsec)
 		return wsec;
-	else if (*error)
-		return NULL;
 
-	return NULL; /* unencrypted */
+error:
+	ifcfg_mdv_wpa_config_free (wpac);
+	return wsec;
 }
 
 static NMSetting *
@@ -2688,60 +2789,14 @@ make_wireless_setting (shvarFile *ifcfg,
 
 	value = svGetValue (ifcfg, "WIRELESS_ESSID", TRUE);
 	if (value) {
-		gsize ssid_len = 0, value_len = strlen (value);
-		char *p = value, *tmp;
-		char buf[33];
-
-		ssid_len = value_len;
-		if (   (value_len >= 2)
-		    && (value[0] == '"')
-		    && (value[value_len - 1] == '"')) {
-			/* Strip the quotes and unescape */
-			p = value + 1;
-			value[value_len - 1] = '\0';
-			svUnescape (p);
-			ssid_len = strlen (p);
-		} else if ((value_len > 2) && (strncmp (value, "0x", 2) == 0)) {
-			/* Hex representation */
-			if (value_len % 2) {
-				g_set_error (error, ifcfg_plugin_error_quark (), 0,
-				             "Invalid SSID '%s' size (looks like hex but length not multiple of 2)",
-				             value);
-				g_free (value);
-				goto error;
-			}
-
-			p = value + 2;
-			while (*p) {
-				if (!isxdigit (*p)) {
-					g_set_error (error, ifcfg_plugin_error_quark (), 0,
-					             "Invalid SSID '%s' character (looks like hex SSID but '%c' isn't a hex digit)",
-					             value, *p);
-					g_free (value);
-					goto error;
-				}
-				p++;
-			}
-
-			tmp = utils_hexstr2bin (value + 2, value_len - 2);
-			ssid_len  = (value_len - 2) / 2;
-			memcpy (buf, tmp, ssid_len);
-			p = &buf[0];
-		}
-
-		if (ssid_len > 32 || ssid_len == 0) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
-			             "Invalid SSID '%s' (size %zu not between 1 and 32 inclusive)",
-			             value, ssid_len);
-			g_free (value);
-			goto error;
-		}
-
-		array = g_byte_array_sized_new (ssid_len);
-		g_byte_array_append (array, (const guint8 *) p, ssid_len);
-		g_object_set (s_wireless, NM_SETTING_WIRELESS_SSID, array, NULL);
-		g_byte_array_free (array, TRUE);
+		array = parse_ssid (value, error);
 		g_free (value);
+
+		if (array) {
+			g_object_set (s_wireless, NM_SETTING_WIRELESS_SSID, array, NULL);
+			g_byte_array_free (array, TRUE);
+		} else
+			goto error;
 	} else {
 		/* Only fail on lack of SSID if device is managed */
 		if (nm_controlled) {
