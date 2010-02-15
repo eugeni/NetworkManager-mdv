@@ -5,6 +5,8 @@ pkglib_LTLIBRARIES = libnm-settings-plugin-ifcfg-mdv.la
 noinst_LTLIBRARIES = libifcfg-mdv-io.la
 
 libifcfg_mdv_io_la_SOURCES = \
+	parse_wpa_supplicant_conf.c \
+	parse_wpa_supplicant_conf.h \
 	reader.c \
 	reader.h \
 	writer.c \
