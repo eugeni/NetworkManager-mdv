@@ -1397,6 +1397,9 @@ write_connection (NMConnection *connection,
 		goto out;
 	}
 
+	/* Indicate that NM will manage this connection */
+	svSetValue (ifcfg, "NM_CONTROLLED", "yes", FALSE);
+
 	if (!strcmp (type, NM_SETTING_WIRED_SETTING_NAME)) {
 		// FIXME: can't write PPPoE at this time
 		if (nm_connection_get_setting (connection, NM_TYPE_SETTING_PPPOE)) {
