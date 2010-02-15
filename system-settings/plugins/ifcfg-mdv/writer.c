@@ -827,7 +827,8 @@ write_connection_setting (NMSettingConnection *s_con, shvarFile *ifcfg)
 
 	svSetValue (ifcfg, "NAME", nm_setting_connection_get_id (s_con), FALSE);
 	svSetValue (ifcfg, "UUID", nm_setting_connection_get_uuid (s_con), FALSE);
-	svSetValue (ifcfg, "ONBOOT",
+	/* FIXME temporary until we can use ONBOOT again */
+	svSetValue (ifcfg, "_NM_ONBOOT",
 	            nm_setting_connection_get_autoconnect (s_con) ? "yes" : "no",
 	            FALSE);
 
