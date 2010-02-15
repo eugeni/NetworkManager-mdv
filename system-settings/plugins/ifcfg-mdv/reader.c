@@ -3167,7 +3167,7 @@ connection_from_file (const char *filename,
 	char *type, *nmc = NULL, *bootproto;
 	NMSetting *s_ip4, *s_ip6;
 	const char *ifcfg_name = NULL;
-	gboolean nm_controlled = TRUE;
+	gboolean nm_controlled = FALSE;
 	char *device;
 
 	g_return_val_if_fail (filename != NULL, NULL);
@@ -3246,8 +3246,8 @@ connection_from_file (const char *filename,
 		lower = g_ascii_strdown (nmc, -1);
 		g_free (nmc);
 
-		if (!strcmp (lower, "no") || !strcmp (lower, "n") || !strcmp (lower, "false"))
-			nm_controlled = FALSE;
+		if (!strcmp (lower, "yes") || !strcmp (lower, "y") || !strcmp (lower, "true"))
+			nm_controlled = TRUE;
 		g_free (lower);
 	}
 
