@@ -165,8 +165,9 @@ make_connection_setting (const char *file,
 	g_free (uuid);
 
 	/* Missing ONBOOT is treated as "ONBOOT=true" by the old network service */
+	/* FIXME temporary until we can use ONBOOT again */
 	g_object_set (s_con, NM_SETTING_CONNECTION_AUTOCONNECT,
-	              svTrueValue (ifcfg, "ONBOOT", TRUE),
+	              svTrueValue (ifcfg, "_NM_ONBOOT", TRUE),
 	              NULL);
 
 	value = svGetValue (ifcfg, "LAST_CONNECT", FALSE);
