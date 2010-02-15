@@ -3167,7 +3167,7 @@ connection_from_file (const char *filename,
 	char *type, *nmc = NULL, *bootproto;
 	NMSetting *s_ip4, *s_ip6;
 	const char *ifcfg_name = NULL;
-	gboolean nm_controlled = FALSE;
+	gboolean nm_controlled = FALSE, onboot;
 	char *device;
 
 	g_return_val_if_fail (filename != NULL, NULL);
@@ -3250,6 +3250,16 @@ connection_from_file (const char *filename,
 			nm_controlled = TRUE;
 		g_free (lower);
 	}
+
+       /*
+        * FIXME
+        * ONBOOT is used by Mandriva initscripts. For now use different
+        * variable; otherwise both initscripts and NM will try to
+        * bring interface online. Do not try to control interface
+        * if ONBOOT was set to true
+        */
+       onboot = svTrueValue (parsed, "ONBOOT", TRUE);
+       nm_controlled = nm_controlled && !onboot;
 
 	if (!strcasecmp (type, TYPE_ETHERNET))
 		connection = wired_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error);
