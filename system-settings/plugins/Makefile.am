@@ -10,6 +10,7 @@ endif
 
 if TARGET_MANDRIVA
 SUBDIRS+=ifcfg-mdv
+SUBDIRS+=ifcfg-rh
 endif
 
 if TARGET_DEBIAN
