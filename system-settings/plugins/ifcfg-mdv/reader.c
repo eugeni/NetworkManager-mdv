@@ -2692,8 +2692,8 @@ make_wireless_security_setting (shvarFile *ifcfg,
 	if (driver) {
 		g_free (driver);
 
-		wpac = ifcfg_mdv_wpa_config("/etc/wpa_supplicant.conf");
-		if (wpac) {
+		wpac = ifcfg_mdv_wpa_config_new("/etc/wpa_supplicant.conf");
+		if (wpac && ifcfg_mdv_wpa_config_parse(wpac)) {
 			gboolean found = FALSE;
 
 			ifcfg_mdv_wpa_config_rewind(wpac);
