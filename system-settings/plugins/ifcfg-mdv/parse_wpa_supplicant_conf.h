@@ -1,8 +1,22 @@
+#ifndef PARSE_WPA_SUPPLICANT_CONF_H
+#define PARSE_WPA_SUPPLICANT_CONF_H
+
 typedef struct _WPAConfig WPAConfig;
 typedef struct _WPANetwork WPANetwork;
 
-WPAConfig *ifcfg_mdv_wpa_config(gchar *);
+gboolean ifcfg_mdv_wpa_config_parse(WPAConfig *);
 void ifcfg_mdv_wpa_config_free(WPAConfig *);
+WPAConfig *ifcfg_mdv_wpa_config_new(gchar *);
+
 WPANetwork *ifcfg_mdv_wpa_config_next(WPAConfig *);
 void ifcfg_mdv_wpa_config_rewind(WPAConfig *);
-gpointer ifcfg_mdv_wpa_network_get_val(WPANetwork *, gconstpointer);
+
+WPANetwork *ifcfg_mdv_wpa_network_new(WPAConfig *);
+void ifcfg_mdv_wpa_network_free(WPANetwork *);
+
+gpointer ifcfg_mdv_wpa_network_get_val(WPANetwork *, const gchar *);
+void ifcfg_mdv_wpa_network_set_val(WPANetwork *, const gchar *, const gchar *);
+
+gboolean ifcfg_mdv_wpa_network_save(WPANetwork *, gchar *, GError **);
+
+#endif /* PARSE_WPA_SUPPLICANT_CONF_H */
