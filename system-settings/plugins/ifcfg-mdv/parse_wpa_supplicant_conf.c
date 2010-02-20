@@ -41,6 +41,8 @@ ifcfg_mdv_wpa_config_free(WPAConfig *wpac)
 
 	g_string_free(wpac->line, TRUE);
 
+	g_io_channel_close(wpac->ioc);
+
 	g_free(wpac);
 }
 
