@@ -19,7 +19,7 @@ libifcfg_mdv_io_la_SOURCES = \
 	../ifcfg-rh/utils.h
 
 INCLUDES = \
-	-I../ifcfg-rh \
+	-I$(top_srcdir)/system-settings/plugins/ifcfg-rh \
 	-I$(top_srcdir)/src/system-settings \
 	-I$(top_srcdir)/include \
 	-I$(top_srcdir)/libnm-glib \
