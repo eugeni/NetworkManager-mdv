@@ -115,7 +115,7 @@ ifcfg_mdv_wpa_config(gchar *file)
 	wpac->comment = g_regex_new("^\\s*#", 0, 0, NULL);
 	wpac->network = g_regex_new("^\\s*network\\s*=\\s*{\\s*$", 0, 0, NULL);
 	wpac->fini = g_regex_new("^\\s*}\\s*$", 0, 0, NULL);
-	wpac->keyval = g_regex_new("^\\s*(\\S+)\\s*=\\s*\"?([^\"]+)\"?\\s*$", 0, 0, NULL);
+	wpac->keyval = g_regex_new("^\\s*(\\S+)\\s*=\\s*(\\S+.*\\S+)\\s*$", 0, 0, NULL);
 	wpac->list = NULL;
 	wpac->next = NULL;
 
