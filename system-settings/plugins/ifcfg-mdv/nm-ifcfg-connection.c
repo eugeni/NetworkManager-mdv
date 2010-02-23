@@ -38,8 +38,11 @@
 #include "common.h"
 #include "nm-ifcfg-connection.h"
 #include "reader.h"
+#include "utils.h"
 #include "writer.h"
 #include "nm-inotify-helper.h"
+
+#include "parse_wpa_supplicant_conf.h"
 
 static NMSettingsConnectionInterface *parent_settings_connection_iface;
 
@@ -198,6 +201,26 @@ do_delete (NMSettingsConnectionInterface *connection,
 	       gpointer user_data)
 {
 	NMIfcfgConnectionPrivate *priv = NM_IFCFG_CONNECTION_GET_PRIVATE (connection);
+	NMSettingWireless *s_wireless;
+	WPANetwork *wpan;
+	const GByteArray *ssid = NULL;
+
+	s_wireless = (NMSettingWireless *)nm_connection_get_setting(NM_CONNECTION(connection), NM_TYPE_SETTING_WIRELESS);
+	if (s_wireless) {
+		puts("non-nul");
+		ssid = nm_setting_wireless_get_ssid(s_wireless);
+	}
+	if (ssid) {
+		wpan = ifcfg_mdv_wpa_network_new(NULL);
+		if (wpan) {
+			gchar *tmp = utils_ssid4ifcfg(ssid);
+			ifcfg_mdv_wpa_network_set_val(wpan, "ssid", tmp);
+			ifcfg_mdv_wpa_network_set_val(wpan, "__DELETE__", "yes");
+			ifcfg_mdv_wpa_network_save(wpan, "/etc/wpa_supplicant.conf", NULL);
+			ifcfg_mdv_wpa_network_free(wpan);
+			g_free(tmp);
+		}
+	}
 
 	g_unlink (priv->filename);
 	if (priv->keyfile)
