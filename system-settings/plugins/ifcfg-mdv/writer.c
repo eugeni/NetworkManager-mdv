@@ -46,24 +46,41 @@
 #include "utils.h"
 #include "crypto.h"
 
+#include "parse_wpa_supplicant_conf.h"
+
 #define PLUGIN_WARN(pname, fmt, args...) \
 	{ g_warning ("   " pname ": " fmt, ##args); }
 
 static void
 set_secret (shvarFile *ifcfg, const char *key, const char *value, gboolean verbatim)
 {
-	shvarFile *keyfile;
+	// shvarFile *keyfile;
+	char *v = 0;
 	
+#if 0
+	/* Mandriva stores keys in actual ifcfg */
 	keyfile = utils_get_keys_ifcfg (ifcfg->fileName, TRUE);
 	if (!keyfile) {
 		PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: could not create key file for '%s'",
 		             ifcfg->fileName);
 		goto error;
 	}
+#endif
 
 	/* Clear the secret from the actual ifcfg */
 	svSetValue (ifcfg, key, NULL, FALSE);
 
+	/* WEP -> WPA will set empty key */
+	if (!value)
+		return;
+
+	v = utils_wep4ifcfg(value);
+	if (!v) {
+		PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: invalid WEP key length");
+		return;
+	}
+
+#if 0
 	svSetValue (keyfile, key, value, verbatim);
 	if (svWriteFile (keyfile, 0600)) {
 		PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: could not update key file '%s'",
@@ -74,9 +91,10 @@ set_secret (shvarFile *ifcfg, const char *key, const char *value, gboolean verba
 	svCloseFile (keyfile);
 	return;
 
-error:
+#endif
 	/* Try setting the secret in the actual ifcfg */
-	svSetValue (ifcfg, key, value, FALSE);
+	svSetValue (ifcfg, key, v, TRUE);
+	g_free(v);
 }
 
 static gboolean
@@ -523,6 +541,7 @@ write_8021x_setting (NMConnection *connection,
 static gboolean
 write_wireless_security_setting (NMConnection *connection,
                                  shvarFile *ifcfg,
+				 WPANetwork *wpan,
                                  gboolean adhoc,
                                  gboolean *no_8021x,
                                  GError **error)
@@ -546,13 +565,13 @@ write_wireless_security_setting (NMConnection *connection,
 
 	auth_alg = nm_setting_wireless_security_get_auth_alg (s_wsec);
 
-	svSetValue (ifcfg, "DEFAULTKEY", NULL, FALSE);
+	// svSetValue (ifcfg, "DEFAULTKEY", NULL, FALSE);
 
 	if (!strcmp (key_mgmt, "none")) {
 		wep = TRUE;
 		*no_8021x = TRUE;
 	} else if (!strcmp (key_mgmt, "wpa-none") || !strcmp (key_mgmt, "wpa-psk")) {
-		svSetValue (ifcfg, "KEY_MGMT", "WPA-PSK", FALSE);
+		ifcfg_mdv_wpa_network_set_val(wpan, "key_mgmt", "WPA-PSK");
 		wpa = TRUE;
 		*no_8021x = TRUE;
 	} else if (!strcmp (key_mgmt, "ieee8021x")) {
@@ -562,13 +581,24 @@ write_wireless_security_setting (NMConnection *connection,
 		wpa = TRUE;
 	}
 
+	/* TODO add additional fields to private object to store extra
+	 * values during parsing configuration */
+	if (strcmp(key_mgmt, "none"))
+		ifcfg_mdv_wpa_network_set_val(wpan, "priority", "1");
+
 	svSetValue (ifcfg, "WIRELESS_ENC_MODE", NULL, FALSE);
 	if (auth_alg) {
-		if (!strcmp (auth_alg, "shared"))
-			svSetValue (ifcfg, "WIRELESS_ENC_MODE", "restricted", FALSE);
-		else if (!strcmp (auth_alg, "open"))
-			svSetValue (ifcfg, "WIRELESS_ENC_MODE", "open", FALSE);
-		else if (!strcmp (auth_alg, "leap")) {
+		if (!strcmp (auth_alg, "shared")) {
+			if (wep)
+				svSetValue (ifcfg, "WIRELESS_ENC_MODE", "restricted", FALSE);
+			ifcfg_mdv_wpa_network_set_val(wpan, "auth_alg", "SHARED");
+		} else if (!strcmp (auth_alg, "open")) {
+			if (wep)
+				svSetValue (ifcfg, "WIRELESS_ENC_MODE", "open", FALSE);
+			ifcfg_mdv_wpa_network_set_val(wpan, "auth_alg", "OPEN");
+		} else if (!strcmp (auth_alg, "leap")) {
+#if 0
+			/* Not used by Mandriva */
 			svSetValue (ifcfg, "WIRELESS_ENC_MODE", "leap", FALSE);
 			svSetValue (ifcfg, "IEEE_8021X_IDENTITY",
 			            nm_setting_wireless_security_get_leap_username (s_wsec),
@@ -577,40 +607,60 @@ write_wireless_security_setting (NMConnection *connection,
 			            nm_setting_wireless_security_get_leap_password (s_wsec),
 			            FALSE);
 			*no_8021x = TRUE;
+#endif
 		}
 	}
 
+#if 0
 	if (wep) {
 		/* Default WEP TX key index */
 		tmp = g_strdup_printf ("%d", nm_setting_wireless_security_get_wep_tx_keyidx (s_wsec) + 1);
 		svSetValue (ifcfg, "DEFAULTKEY", tmp, FALSE);
 		g_free (tmp);
 	}
+#endif
 
 	/* WEP keys */
-	set_secret (ifcfg, "KEY", NULL, FALSE); /* Clear any default key */
-	for (i = 0; i < 4; i++) {
-		key = nm_setting_wireless_security_get_wep_key (s_wsec, i);
-		tmp = g_strdup_printf ("KEY%d", i + 1);
-		set_secret (ifcfg, tmp, (wep && key) ? key : NULL, FALSE);
-		g_free (tmp);
+	/* Mandriva always sets key_idx == 0 */
+	key = nm_setting_wireless_security_get_wep_key (s_wsec, 0);
+	set_secret (ifcfg, "WIRELESS_ENC_KEY", (wep && key) ? key : NULL, FALSE);
+
+	/* FIXME What about roaming mode? */
+	if (wep) {
+		/* remove WPA driver to indicate WEP mode */
+		svSetValue (ifcfg, "WIRELESS_WPA_DRIVER", NULL, FALSE);
+
+		/* remove network from wpa_suplicant.conf */
+		ifcfg_mdv_wpa_network_set_val(wpan, "__DELETE__", "yes");
+
+		return TRUE;
 	}
+
+	/* wpa_supplicant driver. NM always uses wext for wireless */
+	svSetValue (ifcfg, "WIRELESS_WPA_DRIVER", "wext", FALSE);
 
 	/* WPA protos */
-	svSetValue (ifcfg, "WPA_ALLOW_WPA", NULL, FALSE);
-	svSetValue (ifcfg, "WPA_ALLOW_WPA2", NULL, FALSE);
+	str = g_string_new (NULL);
 	num = nm_setting_wireless_security_get_num_protos (s_wsec);
 	for (i = 0; i < num; i++) {
+		gchar *p = NULL;
+
 		proto = nm_setting_wireless_security_get_proto (s_wsec, i);
 		if (proto && !strcmp (proto, "wpa"))
-			svSetValue (ifcfg, "WPA_ALLOW_WPA", "yes", FALSE);
+			p = "WPA";
 		else if (proto && !strcmp (proto, "rsn"))
-			svSetValue (ifcfg, "WPA_ALLOW_WPA2", "yes", FALSE);
+			p = "RSN";
+		if (p) {
+			if (i > 0)
+				g_string_append_c(str, ' ');
+			g_string_append(str, p);
+		}
 	}
+	if (strlen (str->str))
+		ifcfg_mdv_wpa_network_set_val(wpan, "proto", str->str);
 
 	/* WPA Pairwise ciphers */
-	svSetValue (ifcfg, "CIPHER_PAIRWISE", NULL, FALSE);
-	str = g_string_new (NULL);
+	g_string_set_size (str, 0);
 	num = nm_setting_wireless_security_get_num_pairwise (s_wsec);
 	for (i = 0; i < num; i++) {
 		if (i > 0)
@@ -621,12 +671,10 @@ write_wireless_security_setting (NMConnection *connection,
 		g_free (tmp);
 	}
 	if (strlen (str->str))
-		svSetValue (ifcfg, "CIPHER_PAIRWISE", str->str, FALSE);
-	g_string_free (str, TRUE);
+		ifcfg_mdv_wpa_network_set_val(wpan, "pairwise", str->str);
 
 	/* WPA Group ciphers */
-	svSetValue (ifcfg, "CIPHER_GROUP", NULL, FALSE);
-	str = g_string_new (NULL);
+	g_string_set_size (str, 0);
 	num = nm_setting_wireless_security_get_num_groups (s_wsec);
 	for (i = 0; i < num; i++) {
 		if (i > 0)
@@ -637,7 +685,8 @@ write_wireless_security_setting (NMConnection *connection,
 		g_free (tmp);
 	}
 	if (strlen (str->str))
-		svSetValue (ifcfg, "CIPHER_GROUP", str->str, FALSE);
+		ifcfg_mdv_wpa_network_set_val(wpan, "group", str->str);
+
 	g_string_free (str, TRUE);
 
 	/* WPA Passphrase */
@@ -652,11 +701,11 @@ write_wireless_security_setting (NMConnection *connection,
 			g_string_append (quoted, psk);
 			g_string_append_c (quoted, '"');
 		}
-		set_secret (ifcfg, "WPA_PSK", quoted ? quoted->str : psk, TRUE);
+
+		ifcfg_mdv_wpa_network_set_val(wpan, "psk", quoted ? quoted->str : psk);
 		if (quoted)
 			g_string_free (quoted, TRUE);
-	} else
-		set_secret (ifcfg, "WPA_PSK", NULL, FALSE);
+	}
 
 	return TRUE;
 }
@@ -664,16 +713,17 @@ write_wireless_security_setting (NMConnection *connection,
 static gboolean
 write_wireless_setting (NMConnection *connection,
                         shvarFile *ifcfg,
+			WPANetwork *wpan,
                         gboolean *no_8021x,
                         GError **error)
 {
 	NMSettingWireless *s_wireless;
-	char *tmp, *tmp2;
-	const GByteArray *ssid, *mac, *bssid;
+	char *tmp;
+	const GByteArray *ssid, *bssid;
 	const char *mode;
-	char buf[33];
-	guint32 mtu, chan, i;
-	gboolean adhoc = FALSE, hex_ssid = FALSE;
+	guint32 mtu, chan;
+	gboolean adhoc = FALSE;
+	gchar *p_ssid, *old_ssid;
 
 	s_wireless = (NMSettingWireless *) nm_connection_get_setting (connection, NM_TYPE_SETTING_WIRELESS);
 	if (!s_wireless) {
@@ -682,6 +732,8 @@ write_wireless_setting (NMConnection *connection,
 		return FALSE;
 	}
 
+	/* Mandriva does not store HWADDR in ifcfg-XXX */
+#if 0
 	svSetValue (ifcfg, "HWADDR", NULL, FALSE);
 	mac = nm_setting_wireless_get_mac_address (s_wireless);
 	if (mac) {
@@ -691,6 +743,7 @@ write_wireless_setting (NMConnection *connection,
 		svSetValue (ifcfg, "HWADDR", tmp, FALSE);
 		g_free (tmp);
 	}
+#endif
 
 	svSetValue (ifcfg, "MTU", NULL, FALSE);
 	mtu = nm_setting_wireless_get_mtu (s_wireless);
@@ -715,33 +768,35 @@ write_wireless_setting (NMConnection *connection,
 	/* If the SSID contains any non-printable characters, we need to use the
 	 * hex notation of the SSID instead.
 	 */
-	for (i = 0; i < ssid->len; i++) {
-		if (!isprint (ssid->data[i])) {
-			hex_ssid = TRUE;
-			break;
+	p_ssid = utils_ssid4ifcfg(ssid);
+	if (!p_ssid)
+		return FALSE;
+
+	/*
+	 * If SID changed we have to remove it from wpa_supplicant.conf
+	 */
+	old_ssid = svGetValue(ifcfg, "WIRELESS_ESSID", TRUE);
+	if (old_ssid && g_strcmp0(old_ssid, p_ssid)) {
+		WPANetwork *del = ifcfg_mdv_wpa_network_new(NULL);
+
+		if (!del) {
+			g_free(p_ssid);
+			return FALSE;
+		}
+
+		ifcfg_mdv_wpa_network_set_val(del, "ssid", old_ssid);
+		ifcfg_mdv_wpa_network_set_val(del, "__DELETE__", "yes");
+		ifcfg_mdv_wpa_network_save(del, "/etc/wpa_supplicant.conf", error);
+		ifcfg_mdv_wpa_network_free(del);
+		if (*error) {
+			g_free(p_ssid);
+			return FALSE;
 		}
 	}
 
-	if (hex_ssid) {
-		GString *str;
-
-		/* Hex SSIDs don't get quoted */
-		str = g_string_sized_new (ssid->len * 2 + 3);
-		g_string_append (str, "0x");
-		for (i = 0; i < ssid->len; i++)
-			g_string_append_printf (str, "%02X", ssid->data[i]);
-		svSetValue (ifcfg, "WIRELESS_ESSID", str->str, TRUE);
-		g_string_free (str, TRUE);
-	} else {
-		/* Printable SSIDs get quoted */
-		memset (buf, 0, sizeof (buf));
-		memcpy (buf, ssid->data, ssid->len);
-		tmp2 = svEscape (buf);
-		tmp = g_strdup_printf ("\"%s\"", tmp2);
-		svSetValue (ifcfg, "WIRELESS_ESSID", tmp, TRUE);
-		g_free (tmp2);
-		g_free (tmp);
-	}
+	svSetValue (ifcfg, "WIRELESS_ESSID", p_ssid, TRUE);
+	ifcfg_mdv_wpa_network_set_val(wpan, "ssid", p_ssid);
+	g_free(p_ssid);
 
 	mode = nm_setting_wireless_get_mode (s_wireless);
 	if (!mode || !strcmp (mode, "infrastructure")) {
@@ -764,22 +819,24 @@ write_wireless_setting (NMConnection *connection,
 		g_free (tmp);
 	}
 
-	svSetValue (ifcfg, "BSSID", NULL, FALSE);
-	bssid = nm_setting_wireless_get_bssid (s_wireless);
-	if (bssid) {
-		tmp = g_strdup_printf ("%02X:%02X:%02X:%02X:%02X:%02X",
-		                       bssid->data[0], bssid->data[1], bssid->data[2],
-		                       bssid->data[3], bssid->data[4], bssid->data[5]);
-		svSetValue (ifcfg, "BSSID", tmp, FALSE);
-		g_free (tmp);
-	}
-
 	if (nm_setting_wireless_get_security (s_wireless)) {
-		if (!write_wireless_security_setting (connection, ifcfg, adhoc, no_8021x, error))
+		if (!write_wireless_security_setting (connection, ifcfg, wpan, adhoc, no_8021x, error))
 			return FALSE;
 	}
 
-	svSetValue (ifcfg, "TYPE", TYPE_WIRELESS, FALSE);
+	// svSetValue (ifcfg, "BSSID", NULL, FALSE);
+	bssid = nm_setting_wireless_get_bssid (s_wireless);
+	if (bssid) {
+		tmp = g_strdup_printf ("%02X:%02X:%02X:%02X:%02X:%02X",
+				       bssid->data[0], bssid->data[1], bssid->data[2],
+				       bssid->data[3], bssid->data[4], bssid->data[5]);
+		ifcfg_mdv_wpa_network_set_val(wpan, "bssid", tmp);
+		// svSetValue (ifcfg, "BSSID", tmp, FALSE);
+		g_free (tmp);
+	}
+
+
+	// svSetValue (ifcfg, "TYPE", TYPE_WIRELESS, FALSE);
 
 	return TRUE;
 }
@@ -788,7 +845,7 @@ static gboolean
 write_wired_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 {
 	NMSettingWired *s_wired;
-	const GByteArray *mac;
+	// const GByteArray *mac;
 	char *tmp;
 	guint32 mtu;
 
@@ -799,6 +856,8 @@ write_wired_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		return FALSE;
 	}
 
+	/* Mandriva does not store HWADDR in ifcfg-XXX */
+#if 0
 	mac = nm_setting_wired_get_mac_address (s_wired);
 	if (mac) {
 		tmp = g_strdup_printf ("%02X:%02X:%02X:%02X:%02X:%02X",
@@ -807,6 +866,7 @@ write_wired_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		svSetValue (ifcfg, "HWADDR", tmp, FALSE);
 		g_free (tmp);
 	}
+#endif
 
 	mtu = nm_setting_wired_get_mtu (s_wired);
 	if (mtu) {
@@ -815,7 +875,7 @@ write_wired_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		g_free (tmp);
 	}
 
-	svSetValue (ifcfg, "TYPE", TYPE_ETHERNET, FALSE);
+	// svSetValue (ifcfg, "TYPE", TYPE_ETHERNET, FALSE);
 
 	return TRUE;
 }
@@ -825,9 +885,10 @@ write_connection_setting (NMSettingConnection *s_con, shvarFile *ifcfg)
 {
 	char *tmp;
 
-	svSetValue (ifcfg, "NAME", nm_setting_connection_get_id (s_con), FALSE);
-	svSetValue (ifcfg, "UUID", nm_setting_connection_get_uuid (s_con), FALSE);
+	// svSetValue (ifcfg, "NAME", nm_setting_connection_get_id (s_con), FALSE);
+	// svSetValue (ifcfg, "UUID", nm_setting_connection_get_uuid (s_con), FALSE);
 	/* FIXME temporary until we can use ONBOOT again */
+	svSetValue (ifcfg, "ONBOOT", "no", FALSE);
 	svSetValue (ifcfg, "_NM_ONBOOT",
 	            nm_setting_connection_get_autoconnect (s_con) ? "yes" : "no",
 	            FALSE);
@@ -1006,13 +1067,20 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	} else
 		svSetValue (ifcfg, "DOMAIN", NULL, FALSE);
 
+	/*
+	 * Mandriva supports DEFROUTE for PPP connections only, which are
+	 * currently not implemented by ifcfg-mdv
+	 */
+#if 0
 	/* DEFROUTE; remember that it has the opposite meaning from never-default */
 	svSetValue (ifcfg, "DEFROUTE",
 	            nm_setting_ip4_config_get_never_default (s_ip4) ? "no" : "yes",
 	            FALSE);
+#endif
 
+	/* Mandriva does not support PEERROUTES at all */
 	svSetValue (ifcfg, "PEERDNS", NULL, FALSE);
-	svSetValue (ifcfg, "PEERROUTES", NULL, FALSE);
+	// svSetValue (ifcfg, "PEERROUTES", NULL, FALSE);
 	svSetValue (ifcfg, "DHCP_HOSTNAME", NULL, FALSE);
 	svSetValue (ifcfg, "DHCP_CLIENT_ID", NULL, FALSE);
 	if (!strcmp (value, NM_SETTING_IP4_CONFIG_METHOD_AUTO)) {
@@ -1020,9 +1088,11 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		            nm_setting_ip4_config_get_ignore_auto_dns (s_ip4) ? "no" : "yes",
 		            FALSE);
 
+#if 0
 		svSetValue (ifcfg, "PEERROUTES",
 		            nm_setting_ip4_config_get_ignore_auto_routes (s_ip4) ? "no" : "yes",
 		            FALSE);
+#endif
 
 		value = nm_setting_ip4_config_get_dhcp_hostname (s_ip4);
 		if (value)
@@ -1364,6 +1434,7 @@ write_connection (NMConnection *connection,
 	const char *type;
 	gboolean no_8021x = FALSE;
 	gboolean wired = FALSE;
+	WPANetwork *wpan = NULL;
 
 	s_con = NM_SETTING_CONNECTION (nm_connection_get_setting (connection, NM_TYPE_SETTING_CONNECTION));
 	if (!s_con) {
@@ -1414,7 +1485,16 @@ write_connection (NMConnection *connection,
 			goto out;
 		wired = TRUE;
 	} else if (!strcmp (type, NM_SETTING_WIRELESS_SETTING_NAME)) {
-		if (!write_wireless_setting (connection, ifcfg, &no_8021x, error))
+		wpan = ifcfg_mdv_wpa_network_new(NULL);
+		if (!wpan) {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				     "Unable to allocate WPA network");
+			goto out;
+		}
+
+		if (!write_wireless_setting (connection, ifcfg, wpan, &no_8021x, error))
+			goto out;
+		if (wpan && !ifcfg_mdv_wpa_network_save(wpan, "/etc/wpa_supplicant.conf", error))
 			goto out;
 	} else {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
@@ -1454,6 +1534,7 @@ out:
 	if (ifcfg)
 		svCloseFile (ifcfg);
 	g_free (ifcfg_name);
+	ifcfg_mdv_wpa_network_free(wpan);
 	return success;
 }
 
@@ -1463,7 +1544,11 @@ writer_new_connection (NMConnection *connection,
                        char **out_filename,
                        GError **error)
 {
-	return write_connection (connection, ifcfg_dir, NULL, NULL, out_filename, error);
+	// return write_connection (connection, ifcfg_dir, NULL, NULL, out_filename, error);
+	/* For now, disable creation of system connection on Mandriva */
+	g_set_error (error, ifcfg_plugin_error_quark (), 0,
+	     "Creation of system connection not yet implemented in ifcfg-mdv");
+	return FALSE;
 }
 
 gboolean
