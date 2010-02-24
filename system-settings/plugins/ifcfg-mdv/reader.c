@@ -1699,7 +1699,7 @@ add_one_wep_key (shvarFile *ifcfg,
 			p++;
 		}
 		key = g_strdup (value);
-	} else if (   strncmp (value, "s:", 2)
+	} else if ( !strncmp (value, "s:", 2)
 	           && (strlen (value) == 7 || strlen (value) == 15)) {
 		/* ASCII passphrase */
 		char *p = value + 2;
@@ -1713,7 +1713,7 @@ add_one_wep_key (shvarFile *ifcfg,
 			p++;
 		}
 
-		key = utils_bin2hexstr (value, strlen (value), strlen (value) * 2);
+		key = utils_bin2hexstr (value + 2, strlen (value + 2), strlen (value + 2) * 2);
 	} else {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0, "Invalid WEP key length.");
 	}
@@ -1736,6 +1736,8 @@ read_wep_keys (shvarFile *ifcfg,
 {
 	if (!add_one_wep_key (ifcfg, "WIRELESS_ENC_KEY", 0, s_wsec, error))
 		return FALSE;
+#if 0
+	/* Mandriva is using only one key */
 	if (!add_one_wep_key (ifcfg, "KEY1", 0, s_wsec, error))
 		return FALSE;
 	if (!add_one_wep_key (ifcfg, "KEY2", 1, s_wsec, error))
@@ -1746,6 +1748,7 @@ read_wep_keys (shvarFile *ifcfg,
 		return FALSE;
 	if (!add_one_wep_key (ifcfg, "KEY", def_idx, s_wsec, error))
 		return FALSE;
+#endif
 
 	return TRUE;
 }
