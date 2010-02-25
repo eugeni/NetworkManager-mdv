@@ -2459,6 +2459,7 @@ done:
 
 static NMSetting8021x *
 fill_8021x (shvarFile *ifcfg,
+	    WPANetwork *wpan,
             const char *file,
             const char *key_mgmt,
             gboolean wifi,
@@ -2469,21 +2470,17 @@ fill_8021x (shvarFile *ifcfg,
 	char *value;
 	char **list, **iter;
 
-	value = svGetValue (ifcfg, "IEEE_8021X_EAP_METHODS", FALSE);
+	value = ifcfg_mdv_wpa_network_get_val(wpan, "eap");
 	if (!value) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-		             "Missing IEEE_8021X_EAP_METHODS for key management '%s'",
+		             "Missing eap methods for key management '%s'",
 		             key_mgmt);
 		return NULL;
 	}
 
 	list = g_strsplit (value, " ", 0);
-	g_free (value);
 
 	s_8021x = (NMSetting8021x *) nm_setting_802_1x_new ();
-
-	/* Read in the lookaside keys file, if present */
-	keys = utils_get_keys_ifcfg (file, FALSE);
 
 	/* Validate and handle each EAP method */
 	for (iter = list; iter && *iter; iter++) {
@@ -2534,13 +2531,9 @@ fill_8021x (shvarFile *ifcfg,
 		goto error;
 	}
 
-	if (keys)
-		svCloseFile (keys);
 	return s_8021x;
 
 error:
-	if (keys)
-		svCloseFile (keys);
 	g_object_unref (s_8021x);
 	return NULL;
 }
@@ -2629,7 +2622,7 @@ make_wpa_setting (shvarFile *ifcfg,
 			goto error;
 		}
 
-		*s_8021x = fill_8021x (ifcfg, file, key_mgmt, TRUE, error);
+		*s_8021x = fill_8021x (ifcfg, wpan, file, key_mgmt, TRUE, error);
 		if (!*s_8021x)
 			goto error;
 
