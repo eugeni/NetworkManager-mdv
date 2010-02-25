@@ -155,8 +155,10 @@ make_connection_setting (const char *file,
 	g_free (new_id);
 	// g_free (ifcfg_id);
 
+#if 0
 	/* Try for a UUID key before falling back to hashing the file name */
 	uuid = svGetValue (ifcfg, "UUID", FALSE);
+#endif
 	if (!uuid || !strlen (uuid)) {
 		g_free (uuid);
 		uuid = nm_utils_uuid_generate_from_string (ifcfg->fileName);
