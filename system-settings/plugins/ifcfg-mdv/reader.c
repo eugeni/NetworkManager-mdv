@@ -1765,12 +1765,14 @@ make_wep_setting (shvarFile *ifcfg,
 {
 	NMSettingWirelessSecurity *s_wireless_sec;
 	char *value;
-	shvarFile *keys_ifcfg = NULL;
+	// shvarFile *keys_ifcfg = NULL;
 	int default_key_idx = 0;
 
 	s_wireless_sec = NM_SETTING_WIRELESS_SECURITY (nm_setting_wireless_security_new ());
 	g_object_set (s_wireless_sec, NM_SETTING_WIRELESS_SECURITY_KEY_MGMT, "none", NULL);
 
+#if 0
+	/* Mandriva always assumes defalt key #0 */
 	value = svGetValue (ifcfg, "DEFAULTKEY", FALSE);
 	if (value) {
 		gboolean success;
@@ -1787,11 +1789,14 @@ make_wep_setting (shvarFile *ifcfg,
 		}
  		g_free (value);
 	}
+#endif
 
 	/* Read keys in the ifcfg file */
 	if (!read_wep_keys (ifcfg, default_key_idx, s_wireless_sec, error))
 		goto error;
 
+#if 0
+	/* No shadow on Mandriva */
 	/* Try to get keys from the "shadow" key file */
 	keys_ifcfg = utils_get_keys_ifcfg (file, FALSE);
 	if (keys_ifcfg) {
@@ -1801,7 +1806,10 @@ make_wep_setting (shvarFile *ifcfg,
 		}
 		svCloseFile (keys_ifcfg);
 	}
+#endif
 
+#if 0
+	/* Only one key on Mandriva */
 	/* If there's a default key, ensure that key exists */
 	if ((default_key_idx == 1) && !nm_setting_wireless_security_get_wep_key (s_wireless_sec, 1)) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
@@ -1816,6 +1824,7 @@ make_wep_setting (shvarFile *ifcfg,
 		             "Default WEP key index was 4, but no valid KEY4 exists.");
 		goto error;
 	}
+#endif
 
 	value = svGetValue (ifcfg, "WIRELESS_ENC_MODE", FALSE);
 	if (value) {
@@ -2718,13 +2727,13 @@ make_wireless_security_setting (shvarFile *ifcfg,
 		} else {
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
 				     "WIRELESS_WPA_DRIVER set but /etc/wpa_supplicant.conf missing");
-			goto error;
+			goto done;
 		}
 
 		if (!wpan) {
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
 				     "WIRELESS_WPA_DRIVER set but SSID missing in /etc/wpa_supplicant.conf");
-			goto error;
+			goto done;
 		}
 	}
 
@@ -2741,17 +2750,13 @@ make_wireless_security_setting (shvarFile *ifcfg,
 #endif
 
 		wsec = make_wpa_setting (ifcfg, wpan, file, ssid, adhoc, s_8021x, error);
-		if (wsec)
-			return wsec;
-		else if (*error)
-			goto error;
+		if (wsec || *error)
+			goto done;
 	}
 
 	wsec = make_wep_setting (ifcfg, file, error);
-	if (wsec)
-		return wsec;
 
-error:
+done:
 	ifcfg_mdv_wpa_config_free (wpac);
 	return wsec;
 }
