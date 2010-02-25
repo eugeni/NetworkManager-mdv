@@ -2544,81 +2544,120 @@ make_wpa_setting (shvarFile *ifcfg,
                   GError **error)
 {
 	NMSettingWirelessSecurity *wsec;
-	char *value, *psk, *lower;
+	char *key_mgmt, *psk, *lower, *proto;
+	char **list = NULL, **iter;
+	int np;
+
+	key_mgmt = ifcfg_mdv_wpa_network_get_val (wpan, "key_mgmt");
+	/*
+	 * Can NM support two alternative methods?
+	 */
+	if (!key_mgmt)
+		key_mgmt = "WPA-PSK";
+
+	/* Is it WEP? */
+	if (!strcmp(key_mgmt, "NONE"))
+		return NULL;
 
 	wsec = NM_SETTING_WIRELESS_SECURITY (nm_setting_wireless_security_new ());
-
 
 	/* Pairwise and Group ciphers */
 	fill_wpa_ciphers (wpan, wsec, FALSE, adhoc);
 	fill_wpa_ciphers (wpan, wsec, TRUE, adhoc);
 
-	/* WPA and/or RSN */
-	if (adhoc) {
-		/* Ad-Hoc mode only supports WPA proto for now */
-		nm_setting_wireless_security_add_proto (wsec, "wpa");
-	} else {
-		char *proto;
+	/*
+	 * WPA and/or RSN
+	 * Default to both WPA and RSN allowed.
+	 */
+	proto = ifcfg_mdv_wpa_network_get_val(wpan, "proto");
+	if (!proto)
+		proto="WPA RSN";
 
-		proto = ifcfg_mdv_wpa_network_get_val(wpan, "proto");
+	list = g_strsplit_set (proto, " ", 0);
+	for (np = 0, iter = list; iter && *iter; iter++) {
+		if (!*iter)
+			continue;
 
-		if (proto) {
-			if (strstr (proto, "WPA"))
-				nm_setting_wireless_security_add_proto (wsec, "wpa");
-			if (strstr (proto, "RSN"))
-				nm_setting_wireless_security_add_proto (wsec, "rsn");
-			if (nm_setting_wireless_security_get_num_protos (wsec) == 0)
-				PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: ignoring invalid proto '%s'", proto);
-		} else {
-
-			/* 
-			 * Default to both WPA and RSN allowed.
-			 */
+		if (!strcmp (*iter, "WPA")) {
+			np++;
 			nm_setting_wireless_security_add_proto (wsec, "wpa");
+		} else if (!strcmp (*iter, "RSN")) {
+			if (adhoc) {
+				g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				     "Ad-Hoc mode cannot be used with proto 'RSN'");
+				goto free_list;
+			}
+			np++;
 			nm_setting_wireless_security_add_proto (wsec, "rsn");
+		} else {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			     "Unknown proto '%s'", *iter);
+			goto free_list;
 		}
 	}
+	if (list)
+		g_strfreev(list);
 
-	value = ifcfg_mdv_wpa_network_get_val (wpan, "key_mgmt");
+	if (!np) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		     "Empty proto");
+		goto error;
+	}
+
 	/*
-	 * Can NM support two alternative methods?
+	 * Mandriva adds by default list of available protocols
+	 * FIXME be more intelligent - do not fail completely if
+	 * multiple methods are present; configure the best
+	 * available
 	 */
-	if (!value)
-		value = "WPA-PSK";
-	if (!strcmp (value, "WPA-PSK")) {
+	if (strstr (key_mgmt, "WPA-EAP") || strstr (key_mgmt, "IEEE8021X")) {
+		/* Adhoc mode is mutually exclusive with any 802.1x-based authentication */
+		if (adhoc) {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			             "Ad-Hoc mode cannot be used with key_mgmt type '%s'", key_mgmt);
+			goto error;
+		}
+
+		*s_8021x = fill_8021x (ifcfg, file, key_mgmt, TRUE, error);
+		if (!*s_8021x)
+			goto error;
+
+	} else if (strstr (key_mgmt, "WPA-PSK")) {
+		if (adhoc) {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			             "Ad-Hoc mode cannot be used with key_mgmt type 'WPA-PSK'");
+			goto error;
+		}
 		psk = parse_wpa_psk (wpan, file, ssid, error);
 		if (!psk)
 			goto error;
 		g_object_set (wsec, NM_SETTING_WIRELESS_SECURITY_PSK, psk, NULL);
 		g_free (psk);
-
-		if (adhoc)
-			g_object_set (wsec, NM_SETTING_WIRELESS_SECURITY_KEY_MGMT, "wpa-none", NULL);
-		else
-			g_object_set (wsec, NM_SETTING_WIRELESS_SECURITY_KEY_MGMT, "wpa-psk", NULL);
-	} else if (!strcmp (value, "WPA-EAP") || !strcmp (value, "IEEE8021X")) {
-		/* Adhoc mode is mutually exclusive with any 802.1x-based authentication */
-		if (adhoc) {
+	} else if (strstr (key_mgmt, "WPA-NONE")) {
+		if (!adhoc) {
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
-			             "Ad-Hoc mode cannot be used with KEY_MGMT type '%s'", value);
+			             "key_mgmt type 'WPA_NONE' allowed only in Ad-Hoc mode");
 			goto error;
 		}
-
-		*s_8021x = fill_8021x (ifcfg, file, value, TRUE, error);
-		if (!*s_8021x)
+		psk = parse_wpa_psk (wpan, file, ssid, error);
+		if (!psk)
 			goto error;
-
-		lower = g_ascii_strdown (value, -1);
-		g_object_set (wsec, NM_SETTING_WIRELESS_SECURITY_KEY_MGMT, lower, NULL);
-		g_free (lower);
+		g_object_set (wsec, NM_SETTING_WIRELESS_SECURITY_PSK, psk, NULL);
+		g_free (psk);
 	} else {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-		             "Unknown wireless KEY_MGMT type '%s'", value);
+		             "Unknown wireless KEY_MGMT type '%s'", key_mgmt);
 		goto error;
 	}
+	lower = g_ascii_strdown (key_mgmt, -1);
+	g_object_set (wsec, NM_SETTING_WIRELESS_SECURITY_KEY_MGMT, lower, NULL);
+	g_free (lower);
 
 	return (NMSetting *) wsec;
 
+free_list:
+	if (list)
+		g_strfreev(list);
 error:
 	if (wsec)
 		g_object_unref (wsec);
