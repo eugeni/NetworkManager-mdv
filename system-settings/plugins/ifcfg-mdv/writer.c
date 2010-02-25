@@ -52,7 +52,7 @@
 	{ g_warning ("   " pname ": " fmt, ##args); }
 
 static void
-set_secret (shvarFile *ifcfg, const char *key, const char *value, gboolean verbatim)
+set_wep_secret (shvarFile *ifcfg, const char *key, const char *value, gboolean verbatim)
 {
 	// shvarFile *keyfile;
 	char *v = 0;
@@ -623,7 +623,7 @@ write_wireless_security_setting (NMConnection *connection,
 	/* WEP keys */
 	/* Mandriva always sets key_idx == 0 */
 	key = nm_setting_wireless_security_get_wep_key (s_wsec, 0);
-	set_secret (ifcfg, "WIRELESS_ENC_KEY", (wep && key) ? key : NULL, FALSE);
+	set_wep_secret (ifcfg, "WIRELESS_ENC_KEY", (wep && key) ? key : NULL, FALSE);
 
 	/* FIXME What about roaming mode? */
 	if (wep) {
