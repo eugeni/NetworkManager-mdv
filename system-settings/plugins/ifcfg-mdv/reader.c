@@ -3046,6 +3046,8 @@ make_wired_setting (shvarFile *ifcfg,
 		s_wired = NULL;
 	}
 
+#if 0
+	/* Mandriva does not support IEEE802.1x on wired connections */
 	value = svGetValue (ifcfg, "KEY_MGMT", FALSE);
 	if (value) {
 		if (!strcmp (value, "IEEE8021X")) {
@@ -3059,13 +3061,18 @@ make_wired_setting (shvarFile *ifcfg,
 		}
 		g_free (value);
 	}
+#endif
 
 	return (NMSetting *) s_wired;
 
+#if 0
+	/* Mandriva does not support IEEE802.1x on wired connections;
+	 * this is unreacheable */
 error:
 	g_free (value);
 	g_object_unref (s_wired);
 	return NULL;
+#endif
 }
 
 static NMConnection *
@@ -3107,8 +3114,11 @@ wired_connection_from_ifcfg (const char *file,
 	}
 	nm_connection_add_setting (connection, wired_setting);
 
+#if 0
+	/* Always NULL on Mandriva */
 	if (s_8021x)
 		nm_connection_add_setting (connection, NM_SETTING (s_8021x));
+#endif
 
 	if (!nm_connection_verify (connection, error)) {
 		g_object_unref (connection);
