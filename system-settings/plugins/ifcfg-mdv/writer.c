@@ -97,6 +97,7 @@ set_wep_secret (shvarFile *ifcfg, const char *key, const char *value, gboolean v
 	g_free(v);
 }
 
+#if 0
 static gboolean
 write_secret_file (const char *path,
                    const char *data,
@@ -164,6 +165,7 @@ write_secret_file (const char *path,
 out:
 	return success;
 }
+#endif
 
 typedef NMSetting8021xCKScheme (*SchemeFunc)(NMSetting8021x *setting);
 typedef const char *           (*PathFunc)  (NMSetting8021x *setting);
@@ -183,7 +185,7 @@ static const ObjectType ca_type = {
 	nm_setting_802_1x_get_ca_cert_scheme,
 	nm_setting_802_1x_get_ca_cert_path,
 	nm_setting_802_1x_get_ca_cert_blob,
-	"IEEE_8021X_CA_CERT",
+	"ca_cert",
 	"ca-cert.der"
 };
 
@@ -192,7 +194,7 @@ static const ObjectType phase2_ca_type = {
 	nm_setting_802_1x_get_phase2_ca_cert_scheme,
 	nm_setting_802_1x_get_phase2_ca_cert_path,
 	nm_setting_802_1x_get_phase2_ca_cert_blob,
-	"IEEE_8021X_INNER_CA_CERT",
+	"ca_cert2",
 	"inner-ca-cert.der"
 };
 
@@ -201,7 +203,7 @@ static const ObjectType client_type = {
 	nm_setting_802_1x_get_client_cert_scheme,
 	nm_setting_802_1x_get_client_cert_path,
 	nm_setting_802_1x_get_client_cert_blob,
-	"IEEE_8021X_CLIENT_CERT",
+	"client_cert",
 	"client-cert.der"
 };
 
@@ -210,7 +212,7 @@ static const ObjectType phase2_client_type = {
 	nm_setting_802_1x_get_phase2_client_cert_scheme,
 	nm_setting_802_1x_get_phase2_client_cert_path,
 	nm_setting_802_1x_get_phase2_client_cert_blob,
-	"IEEE_8021X_INNER_CLIENT_CERT",
+	"client_cert2",
 	"inner-client-cert.der"
 };
 
@@ -219,7 +221,7 @@ static const ObjectType pk_type = {
 	nm_setting_802_1x_get_private_key_scheme,
 	nm_setting_802_1x_get_private_key_path,
 	nm_setting_802_1x_get_private_key_blob,
-	"IEEE_8021X_PRIVATE_KEY",
+	"private_key",
 	"private-key.pem"
 };
 
@@ -228,7 +230,7 @@ static const ObjectType phase2_pk_type = {
 	nm_setting_802_1x_get_phase2_private_key_scheme,
 	nm_setting_802_1x_get_phase2_private_key_path,
 	nm_setting_802_1x_get_phase2_private_key_blob,
-	"IEEE_8021X_INNER_PRIVATE_KEY",
+	"private_key2",
 	"inner-private-key.pem"
 };
 
@@ -237,7 +239,7 @@ static const ObjectType p12_type = {
 	nm_setting_802_1x_get_private_key_scheme,
 	nm_setting_802_1x_get_private_key_path,
 	nm_setting_802_1x_get_private_key_blob,
-	"IEEE_8021X_PRIVATE_KEY",
+	"private_key",
 	"private-key.p12"
 };
 
@@ -246,12 +248,18 @@ static const ObjectType phase2_p12_type = {
 	nm_setting_802_1x_get_phase2_private_key_scheme,
 	nm_setting_802_1x_get_phase2_private_key_path,
 	nm_setting_802_1x_get_phase2_private_key_blob,
-	"IEEE_8021X_INNER_PRIVATE_KEY",
+	"private_key2",
 	"inner-private-key.p12"
 };
 
+/*
+ * FIXME the name is misleading and should be changed
+ * Mandriva does not use explicit certifcate store so we do nto either
+ * If given BLOB - fail, informing user
+ */
 static gboolean
 write_object (NMSetting8021x *s_8021x,
+	      WPANetwork *wpan,
               shvarFile *ifcfg,
               const GByteArray *override_data,
               const ObjectType *objtype,
@@ -265,16 +273,22 @@ write_object (NMSetting8021x *s_8021x,
 	g_return_val_if_fail (objtype != NULL, FALSE);
 
 	if (override_data) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			     "ifcfg-mdv does not support raw certificate data");
+		return FALSE;
 		/* if given explicit data to save, always use that instead of asking
 		 * the setting what to do.
 		 */
-		blob = override_data;
+		// blob = override_data;
 	} else {
 		scheme = (*(objtype->scheme_func))(s_8021x);
 		switch (scheme) {
 		case NM_SETTING_802_1X_CK_SCHEME_BLOB:
-			blob = (*(objtype->blob_func))(s_8021x);
-			break;
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				     "ifcfg-mdv does not support raw certificate data");
+			return FALSE;
+		// 	blob = (*(objtype->blob_func))(s_8021x);
+		// 	break;
 		case NM_SETTING_802_1X_CK_SCHEME_PATH:
 			path = (*(objtype->path_func))(s_8021x);
 			break;
@@ -287,8 +301,8 @@ write_object (NMSetting8021x *s_8021x,
 	 * 802.1x and thus we clear out the paths and certs.
 	 */
 	if (!path && !blob) {
-		char *standard_file;
-		int ignored;
+		// char *standard_file;
+		// int ignored;
 
 		/* Since no cert/private key is now being used, delete any standard file
 		 * that was created for this connection, but leave other files alone.
@@ -296,12 +310,14 @@ write_object (NMSetting8021x *s_8021x,
 		 * /etc/sysconfig/network-scripts/ca-cert-Test_Write_Wifi_WPA_EAP-TLS.der
 		 * will be deleted, but /etc/pki/tls/cert.pem will not.
 		 */
+#if 0
 		standard_file = utils_cert_path (ifcfg->fileName, objtype->suffix);
 		if (g_file_test (standard_file, G_FILE_TEST_EXISTS))
 			ignored = unlink (standard_file);
 		g_free (standard_file);
+#endif
 
-		svSetValue (ifcfg, objtype->ifcfg_key, NULL, FALSE);
+		ifcfg_mdv_wpa_network_unset(wpan, objtype->ifcfg_key);
 		return TRUE;
 	}
 
@@ -309,10 +325,11 @@ write_object (NMSetting8021x *s_8021x,
 	 * may have been sent.
 	 */
 	if (path) {
-		svSetValue (ifcfg, objtype->ifcfg_key, path, FALSE);
+		ifcfg_mdv_wpa_network_set_val(wpan, objtype->ifcfg_key, path);
 		return TRUE;
 	}
 
+#if 0
 	/* If it's raw certificate data, write the cert data out to the standard file */
 	if (blob) {
 		gboolean success;
@@ -344,19 +361,21 @@ write_object (NMSetting8021x *s_8021x,
 		}
 		g_free (new_file);
 	}
+#endif
 
 	return FALSE;
 }
 
 static gboolean
 write_8021x_certs (NMSetting8021x *s_8021x,
+		   WPANetwork *wpan,
                    gboolean phase2,
                    shvarFile *ifcfg,
                    GError **error)
 {
 	GByteArray *enc_key = NULL;
 	const char *password = NULL;
-	char *generated_pw = NULL;
+	// char *generated_pw = NULL;
 	gboolean success = FALSE, is_pkcs12 = FALSE;
 	const ObjectType *otype = NULL;
 	const GByteArray *blob = NULL;
@@ -367,7 +386,7 @@ write_8021x_certs (NMSetting8021x *s_8021x,
 	else
 		otype = &ca_type;
 
-	if (!write_object (s_8021x, ifcfg, NULL, otype, error))
+	if (!write_object (s_8021x, wpan, ifcfg, NULL, otype, error))
 		return FALSE;
 
 	/* Private key */
@@ -390,9 +409,14 @@ write_8021x_certs (NMSetting8021x *s_8021x,
 	else
 		otype = phase2 ? &phase2_pk_type : &pk_type;
 
-	if ((*(otype->scheme_func))(s_8021x) == NM_SETTING_802_1X_CK_SCHEME_BLOB)
-		blob = (*(otype->blob_func))(s_8021x);
+	if ((*(otype->scheme_func))(s_8021x) == NM_SETTING_802_1X_CK_SCHEME_BLOB) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			     "ifcfg-mdv does not support raw certificate data");
+		return FALSE;
+	//	blob = (*(otype->blob_func))(s_8021x);
+	}
 
+#if 0
 	/* Only do the private key re-encrypt dance if we got the raw key data, which
 	 * by definition will be unencrypted.  If we're given a direct path to the
 	 * private key file, it'll be encrypted, so we don't need to re-encrypt.
@@ -406,22 +430,22 @@ write_8021x_certs (NMSetting8021x *s_8021x,
 		if (generated_pw)
 			password = generated_pw;
 	}
+#endif
 
 	/* Save the private key */
-	if (!write_object (s_8021x, ifcfg, enc_key ? enc_key : blob, otype, error))
+	if (!write_object (s_8021x, wpan, ifcfg, enc_key ? enc_key : blob, otype, error))
 		goto out;
 
 	/* Private key password */
 	if (phase2)
-		set_secret (ifcfg, "IEEE_8021X_INNER_PRIVATE_KEY_PASSWORD", password, FALSE);
+		ifcfg_mdv_wpa_network_set_val(wpan, "private_key2_password", password);
 	else
-		set_secret (ifcfg, "IEEE_8021X_PRIVATE_KEY_PASSWORD", password, FALSE);
+		ifcfg_mdv_wpa_network_set_val(wpan, "private_key_password", password);
 
 	/* Client certificate */
 	if (is_pkcs12) {
-		svSetValue (ifcfg,
-		            phase2 ? "IEEE_8021X_INNER_CLIENT_CERT" : "IEEE_8021X_CLIENT_CERT",
-		            NULL, FALSE);
+		ifcfg_mdv_wpa_network_unset(wpan,
+		            phase2 ? "client_cert2" : "client_cert");
 	} else {
 		if (phase2)
 			otype = &phase2_client_type;
@@ -429,13 +453,14 @@ write_8021x_certs (NMSetting8021x *s_8021x,
 			otype = &client_type;
 
 		/* Save the client certificate */
-		if (!write_object (s_8021x, ifcfg, NULL, otype, error))
+		if (!write_object (s_8021x, wpan, ifcfg, NULL, otype, error))
 			goto out;
 	}
 
 	success = TRUE;
 
 out:
+#if 0
 	if (generated_pw) {
 		memset (generated_pw, 0, strlen (generated_pw));
 		g_free (generated_pw);
@@ -444,11 +469,13 @@ out:
 		memset (enc_key->data, 0, enc_key->len);
 		g_byte_array_free (enc_key, TRUE);
 	}
+#endif
 	return success;
 }
 
 static gboolean
 write_8021x_setting (NMConnection *connection,
+		     WPANetwork *wpan,
                      shvarFile *ifcfg,
                      gboolean wired,
                      GError **error)
@@ -458,18 +485,25 @@ write_8021x_setting (NMConnection *connection,
 	char *tmp = NULL;
 	gboolean success = FALSE;
 	GString *phase2_auth;
+	GString *str;
 
 	s_8021x = (NMSetting8021x *) nm_connection_get_setting (connection, NM_TYPE_SETTING_802_1X);
 	if (!s_8021x) {
+#if 0
+		/* No wired security in Mandriva */
 		/* If wired, clear KEY_MGMT */
 		if (wired)
 			svSetValue (ifcfg, "KEY_MGMT", NULL, FALSE);
+#endif
 		return TRUE;
 	}
 
+#if 0
+		/* No wired security in Mandriva */
 	/* If wired, write KEY_MGMT */
 	if (wired)
 		svSetValue (ifcfg, "KEY_MGMT", "IEEE8021X", FALSE);
+#endif
 
 	/* EAP method */
 	if (nm_setting_802_1x_get_num_eap_methods (s_8021x)) {
@@ -477,39 +511,46 @@ write_8021x_setting (NMConnection *connection,
 		if (value)
 			tmp = g_ascii_strup (value, -1);
 	}
-	svSetValue (ifcfg, "IEEE_8021X_EAP_METHODS", tmp ? tmp : NULL, FALSE);
+	ifcfg_mdv_wpa_network_set_val(wpan, "eap", tmp ? tmp : NULL);
 	g_free (tmp);
 
-	svSetValue (ifcfg, "IEEE_8021X_IDENTITY",
-	            nm_setting_802_1x_get_identity (s_8021x),
-	            FALSE);
+	ifcfg_mdv_wpa_network_set_val(wpan, "identity",
+	            nm_setting_802_1x_get_identity (s_8021x));
 
-	svSetValue (ifcfg, "IEEE_8021X_ANON_IDENTITY",
-	            nm_setting_802_1x_get_anonymous_identity (s_8021x),
-	            FALSE);
+	ifcfg_mdv_wpa_network_set_val(wpan, "anonymous_identity",
+	            nm_setting_802_1x_get_anonymous_identity (s_8021x));
 
-	set_secret (ifcfg, "IEEE_8021X_PASSWORD", nm_setting_802_1x_get_password (s_8021x), FALSE);
+	ifcfg_mdv_wpa_network_set_val(wpan, "password", nm_setting_802_1x_get_password (s_8021x));
+
+	str = g_string_new("");
 
 	/* PEAP version */
 	value = nm_setting_802_1x_get_phase1_peapver (s_8021x);
-	svSetValue (ifcfg, "IEEE_8021X_PEAP_VERSION", NULL, FALSE);
 	if (value && (!strcmp (value, "0") || !strcmp (value, "1")))
-		svSetValue (ifcfg, "IEEE_8021X_PEAP_VERSION", value, FALSE);
+		g_string_printf(str, "peapver=%s", value);
 
 	/* Force new PEAP label */
 	value = nm_setting_802_1x_get_phase1_peaplabel (s_8021x);
-	svSetValue (ifcfg, "IEEE_8021X_PEAP_FORCE_NEW_LABEL", NULL, FALSE);
-	if (value && !strcmp (value, "1"))
-		svSetValue (ifcfg, "IEEE_8021X_PEAP_FORCE_NEW_LABEL", "yes", FALSE);
+	if (value && !strcmp (value, "1")) {
+		if (str->len)
+			g_string_append_c(str, ' ');
+		g_string_printf(str, "peaplabel=%s", value);
+	}
+
+	if (str->len) {
+		g_string_prepend_c(str, '"');
+		g_string_append_c(str, '"');
+		ifcfg_mdv_wpa_network_set_val(wpan, "phase1", str->str);
+	}
+	g_string_free(str, TRUE);
 
 	/* Phase2 auth methods */
-	svSetValue (ifcfg, "IEEE_8021X_INNER_AUTH_METHODS", NULL, FALSE);
 	phase2_auth = g_string_new (NULL);
 
 	value = nm_setting_802_1x_get_phase2_auth (s_8021x);
 	if (value) {
 		tmp = g_ascii_strup (value, -1);
-		g_string_append (phase2_auth, tmp);
+		g_string_printf (phase2_auth, "auth=%s", tmp);
 		g_free (tmp);
 	}
 
@@ -519,20 +560,21 @@ write_8021x_setting (NMConnection *connection,
 			g_string_append_c (phase2_auth, ' ');
 
 		tmp = g_ascii_strup (value, -1);
-		g_string_append_printf (phase2_auth, "EAP-%s", tmp);
+		g_string_append_printf (phase2_auth, "autheap=%s", tmp);
 		g_free (tmp);
 	}
 
-	svSetValue (ifcfg, "IEEE_8021X_INNER_AUTH_METHODS",
-	            phase2_auth->len ? phase2_auth->str : NULL,
-	            FALSE);
-
+	if (phase2_auth->len) {
+		g_string_prepend_c(phase2_auth, '"');
+		g_string_append_c(phase2_auth, '"');
+		ifcfg_mdv_wpa_network_set_val(wpan, "phase2", phase2_auth->str);
+	}
 	g_string_free (phase2_auth, TRUE);
 
-	success = write_8021x_certs (s_8021x, FALSE, ifcfg, error);
+	success = write_8021x_certs (s_8021x, wpan, FALSE, ifcfg, error);
 	if (success) {
 		/* phase2/inner certs */
-		success = write_8021x_certs (s_8021x, TRUE, ifcfg, error);
+		success = write_8021x_certs (s_8021x, wpan, TRUE, ifcfg, error);
 	}
 
 	return success;
@@ -1495,8 +1537,6 @@ write_connection (NMConnection *connection,
 
 		if (!write_wireless_setting (connection, ifcfg, wpan, &no_8021x, error))
 			goto out;
-		if (wpan && !ifcfg_mdv_wpa_network_save(wpan, "/etc/wpa_supplicant.conf", error))
-			goto out;
 	} else {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 		             "Can't write connection type '%s'", type);
@@ -1504,9 +1544,12 @@ write_connection (NMConnection *connection,
 	}
 
 	if (!no_8021x) {
-		if (!write_8021x_setting (connection, ifcfg, wired, error))
+		if (!write_8021x_setting (connection, wpan, ifcfg, wired, error))
 			goto out;
 	}
+
+	if (!ifcfg_mdv_wpa_network_save(wpan, "/etc/wpa_supplicant.conf", error))
+		goto out;
 
 	if (!write_ip4_setting (connection, ifcfg, error))
 		goto out;
