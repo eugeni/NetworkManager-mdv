@@ -617,9 +617,9 @@ write_wireless_security_setting (NMConnection *connection,
 		wpa = TRUE;
 		*no_8021x = TRUE;
 	} else if (!strcmp (key_mgmt, "ieee8021x")) {
-		svSetValue (ifcfg, "KEY_MGMT", "IEEE8021X", FALSE);
+		ifcfg_mdv_wpa_network_set_val(wpan, "key_mgmt", "IEEE8021X");
 	} else if (!strcmp (key_mgmt, "wpa-eap")) {
-		svSetValue (ifcfg, "KEY_MGMT", "WPA-EAP", FALSE);
+		ifcfg_mdv_wpa_network_set_val(wpan, "key_mgmt", "WPA-EAP");
 		wpa = TRUE;
 	}
 
