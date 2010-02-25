@@ -723,7 +723,7 @@ write_wireless_setting (NMConnection *connection,
 	const char *mode;
 	guint32 mtu, chan;
 	gboolean adhoc = FALSE;
-	gchar *p_ssid, *old_ssid;
+	gchar *p_ssid, *old_ssid = NULL;
 
 	s_wireless = (NMSettingWireless *) nm_connection_get_setting (connection, NM_TYPE_SETTING_WIRELESS);
 	if (!s_wireless) {
@@ -793,6 +793,7 @@ write_wireless_setting (NMConnection *connection,
 			return FALSE;
 		}
 	}
+	g_free(old_ssid);
 
 	svSetValue (ifcfg, "WIRELESS_ESSID", p_ssid, TRUE);
 	ifcfg_mdv_wpa_network_set_val(wpan, "ssid", p_ssid);
