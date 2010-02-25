@@ -2709,11 +2709,11 @@ make_wireless_security_setting (shvarFile *ifcfg,
 				if (w_ssid)
 					b_ssid = parse_ssid(w_ssid, error);
 
-				if (b_ssid)
-					if (b_ssid->len == ssid->len && memcmp(b_ssid->data, ssid->data, ssid->len) == 0) {
-						g_byte_array_unref(b_ssid);
+				if (b_ssid) {
+					if (b_ssid->len == ssid->len && memcmp(b_ssid->data, ssid->data, ssid->len) == 0)
 						found = TRUE;
-				       }
+					g_byte_array_unref(b_ssid);
+				}
 			}
 		} else {
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
