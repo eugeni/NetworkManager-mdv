@@ -117,7 +117,7 @@ make_connection_setting (const char *file,
 	NMSettingConnection *s_con;
 	const char *ifcfg_name = NULL;
 	char *new_id = NULL, *uuid = NULL, *value;
-	char *ifcfg_id;
+	// char *ifcfg_id;
 
 	ifcfg_name = utils_get_ifcfg_name (file, TRUE);
 	if (!ifcfg_name)
@@ -126,9 +126,12 @@ make_connection_setting (const char *file,
 	s_con = NM_SETTING_CONNECTION (nm_setting_connection_new ());
 
 	/* Try the ifcfg file's internally defined name if available */
-	ifcfg_id = svGetValue (ifcfg, "NAME", FALSE);
+#if 0
+	/* Mandriva does not use or set NAME */
+	// ifcfg_id = svGetValue (ifcfg, "NAME", FALSE);
 	if (ifcfg_id && strlen (ifcfg_id))
 		g_object_set (s_con, NM_SETTING_CONNECTION_ID, ifcfg_id, NULL);
+#endif
 
 	if (!nm_setting_connection_get_id (s_con)) {
 		if (suggested) {
@@ -150,7 +153,7 @@ make_connection_setting (const char *file,
 	}
 
 	g_free (new_id);
-	g_free (ifcfg_id);
+	// g_free (ifcfg_id);
 
 	/* Try for a UUID key before falling back to hashing the file name */
 	uuid = svGetValue (ifcfg, "UUID", FALSE);
