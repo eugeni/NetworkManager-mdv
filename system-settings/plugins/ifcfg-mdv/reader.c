@@ -67,6 +67,7 @@
 	{ g_warning ("   " pname ": " fmt, ##args); }
 
 static gboolean eap_simple_reader (const char *eap_method,
+				   WPANetwork *wpan,
                                    shvarFile *ifcfg,
                                    shvarFile *keys,
                                    NMSetting8021x *s_8021x,
@@ -74,6 +75,7 @@ static gboolean eap_simple_reader (const char *eap_method,
                                    GError **error);
 
 static gboolean eap_tls_reader (const char *eap_method,
+				WPANetwork *wpan,
                                 shvarFile *ifcfg,
                                 shvarFile *keys,
                                 NMSetting8021x *s_8021x,
@@ -81,6 +83,7 @@ static gboolean eap_tls_reader (const char *eap_method,
                                 GError **error);
 
 static gboolean eap_peap_reader (const char *eap_method,
+				 WPANetwork *wpan,
                                  shvarFile *ifcfg,
                                  shvarFile *keys,
                                  NMSetting8021x *s_8021x,
@@ -88,6 +91,7 @@ static gboolean eap_peap_reader (const char *eap_method,
                                  GError **error);
 
 static gboolean eap_ttls_reader (const char *eap_method,
+				 WPANetwork *wpan,
                                  shvarFile *ifcfg,
                                  shvarFile *keys,
                                  NMSetting8021x *s_8021x,
@@ -2022,6 +2026,7 @@ out:
 typedef struct {
 	const char *method;
 	gboolean (*reader)(const char *eap_method,
+			   WPANetwork *wpan,
 	                   shvarFile *ifcfg,
 	                   shvarFile *keys,
 	                   NMSetting8021x *s_8021x,
@@ -2045,6 +2050,7 @@ static EAPReader eap_readers[] = {
 
 static gboolean
 eap_simple_reader (const char *eap_method,
+		   WPANetwork *wpan,
                    shvarFile *ifcfg,
                    shvarFile *keys,
                    NMSetting8021x *s_8021x,
@@ -2053,59 +2059,30 @@ eap_simple_reader (const char *eap_method,
 {
 	char *value;
 
-	value = svGetValue (ifcfg, "IEEE_8021X_IDENTITY", FALSE);
+	value = ifcfg_mdv_wpa_network_get_val(wpan, "identity");
 	if (!value) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-		             "Missing IEEE_8021X_IDENTITY for EAP method '%s'.",
+		             "Missing identity for EAP method '%s'.",
 		             eap_method);
 		return FALSE;
 	}
 	g_object_set (s_8021x, NM_SETTING_802_1X_IDENTITY, value, NULL);
-	g_free (value);
 
-	value = svGetValue (ifcfg, "IEEE_8021X_PASSWORD", FALSE);
-	if (!value && keys) {
-		/* Try the lookaside keys file */
-		value = svGetValue (keys, "IEEE_8021X_PASSWORD", FALSE);
-	}
-
+	value = ifcfg_mdv_wpa_network_get_val (wpan, "password");
 	if (!value) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-		             "Missing IEEE_8021X_PASSWORD for EAP method '%s'.",
+		             "Missing password for EAP method '%s'.",
 		             eap_method);
 		return FALSE;
 	}
-
 	g_object_set (s_8021x, NM_SETTING_802_1X_PASSWORD, value, NULL);
-	g_free (value);
 
 	return TRUE;
 }
 
-static char *
-get_cert_file (const char *ifcfg_path, const char *cert_path)
-{
-	const char *base = cert_path;
-	char *p, *ret, *dirname;
-
-	g_return_val_if_fail (ifcfg_path != NULL, NULL);
-	g_return_val_if_fail (cert_path != NULL, NULL);
-
-	if (cert_path[0] == '/')
-		return g_strdup (cert_path);
-
-	p = strrchr (cert_path, '/');
-	if (p)
-		base = p + 1;
-
-	dirname = g_path_get_dirname (ifcfg_path);
-	ret = g_build_path ("/", dirname, base, NULL);
-	g_free (dirname);
-	return ret;
-}
-
 static gboolean
 eap_tls_reader (const char *eap_method,
+		WPANetwork *wpan,
                 shvarFile *ifcfg,
                 shvarFile *keys,
                 NMSetting8021x *s_8021x,
@@ -2114,38 +2091,34 @@ eap_tls_reader (const char *eap_method,
 {
 	char *value;
 	char *ca_cert = NULL;
-	char *real_path = NULL;
 	char *client_cert = NULL;
 	char *privkey = NULL;
 	char *privkey_password = NULL;
 	gboolean success = FALSE;
 	NMSetting8021xCKFormat privkey_format = NM_SETTING_802_1X_CK_FORMAT_UNKNOWN;
 
-	value = svGetValue (ifcfg, "IEEE_8021X_IDENTITY", FALSE);
+	value = ifcfg_mdv_wpa_network_get_val(wpan, "identity");
 	if (!value) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-		             "Missing IEEE_8021X_IDENTITY for EAP method '%s'.",
+		             "Missing identity for EAP method '%s'.",
 		             eap_method);
 		return FALSE;
 	}
 	g_object_set (s_8021x, NM_SETTING_802_1X_IDENTITY, value, NULL);
-	g_free (value);
 
-	ca_cert = svGetValue (ifcfg,
-	                      phase2 ? "IEEE_8021X_INNER_CA_CERT" : "IEEE_8021X_CA_CERT",
-	                      FALSE);
+	ca_cert = ifcfg_mdv_wpa_network_get_val(wpan,
+	                      phase2 ? "ca_cert2" : "ca_cert");
 	if (ca_cert) {
-		real_path = get_cert_file (ifcfg->fileName, ca_cert);
 		if (phase2) {
 			if (!nm_setting_802_1x_set_phase2_ca_cert (s_8021x,
-			                                           real_path,
+			                                           ca_cert,
 			                                           NM_SETTING_802_1X_CK_SCHEME_PATH,
 			                                           NULL,
 			                                           error))
 				goto done;
 		} else {
 			if (!nm_setting_802_1x_set_ca_cert (s_8021x,
-			                                    real_path,
+			                                    ca_cert,
 			                                    NM_SETTING_802_1X_CK_SCHEME_PATH,
 			                                    NULL,
 			                                    error))
@@ -2154,46 +2127,35 @@ eap_tls_reader (const char *eap_method,
 	} else {
 		PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: missing %s for EAP"
 		             " method '%s'; this is insecure!",
-	                     phase2 ? "IEEE_8021X_INNER_CA_CERT" : "IEEE_8021X_CA_CERT",
+	                     phase2 ? "ca_cert2" : "ca_cert",
 		             eap_method);
 	}
 
 	/* Private key password */
-	privkey_password = svGetValue (ifcfg,
-	                               phase2 ? "IEEE_8021X_INNER_PRIVATE_KEY_PASSWORD": "IEEE_8021X_PRIVATE_KEY_PASSWORD",
-	                               FALSE);
-	if (!privkey_password && keys) {
-		/* Try the lookaside keys file */
-		privkey_password = svGetValue (keys,
-		                               phase2 ? "IEEE_8021X_INNER_PRIVATE_KEY_PASSWORD": "IEEE_8021X_PRIVATE_KEY_PASSWORD",
-		                               FALSE);
-	}
-
+	privkey_password = ifcfg_mdv_wpa_network_get_val(wpan,
+	                               phase2 ? "private_key2_password": "private_key_password");
 	if (!privkey_password) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 		             "Missing %s for EAP method '%s'.",
-		             phase2 ? "IEEE_8021X_INNER_PRIVATE_KEY_PASSWORD" : "IEEE_8021X_PRIVATE_KEY_PASSWORD",
+		             phase2 ? "private_key2_password" : "private_key_password",
 		             eap_method);
 		goto done;
 	}
 
 	/* The private key itself */
-	privkey = svGetValue (ifcfg,
-	                      phase2 ? "IEEE_8021X_INNER_PRIVATE_KEY" : "IEEE_8021X_PRIVATE_KEY",
-	                      FALSE);
+	privkey = ifcfg_mdv_wpa_network_get_val(wpan,
+	                      phase2 ? "private_key2" : "private_key");
 	if (!privkey) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 		             "Missing %s for EAP method '%s'.",
-	                      phase2 ? "IEEE_8021X_INNER_PRIVATE_KEY" : "IEEE_8021X_PRIVATE_KEY",
+	                      phase2 ? "private_key2" : "private_key",
 		             eap_method);
 		goto done;
 	}
 
-	g_free (real_path);
-	real_path = get_cert_file (ifcfg->fileName, privkey);
 	if (phase2) {
 		if (!nm_setting_802_1x_set_phase2_private_key (s_8021x,
-		                                               real_path,
+		                                               privkey,
 		                                               privkey_password,
 			                                           NM_SETTING_802_1X_CK_SCHEME_PATH,
 		                                               &privkey_format,
@@ -2201,7 +2163,7 @@ eap_tls_reader (const char *eap_method,
 			goto done;
 	} else {
 		if (!nm_setting_802_1x_set_private_key (s_8021x,
-		                                        real_path,
+		                                        privkey,
 		                                        privkey_password,
 			                                    NM_SETTING_802_1X_CK_SCHEME_PATH,
 		                                        &privkey_format,
@@ -2216,29 +2178,26 @@ eap_tls_reader (const char *eap_method,
 	 */
 	if (   privkey_format == NM_SETTING_802_1X_CK_FORMAT_RAW_KEY
 	    || privkey_format == NM_SETTING_802_1X_CK_FORMAT_X509) {
-		client_cert = svGetValue (ifcfg,
-		                          phase2 ? "IEEE_8021X_INNER_CLIENT_CERT" : "IEEE_8021X_CLIENT_CERT",
-		                          FALSE);
+		client_cert = ifcfg_mdv_wpa_network_get_val(wpan,
+		                          phase2 ? "client_cert2" : "client_cert");
 		if (!client_cert) {
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
 			             "Missing %s for EAP method '%s'.",
-			             phase2 ? "IEEE_8021X_INNER_CLIENT_CERT" : "IEEE_8021X_CLIENT_CERT",
+			             phase2 ? "client_cert2" : "client_cert",
 			             eap_method);
 			goto done;
 		}
 
-		g_free (real_path);
-		real_path = get_cert_file (ifcfg->fileName, client_cert);
 		if (phase2) {
 			if (!nm_setting_802_1x_set_phase2_client_cert (s_8021x,
-			                                               real_path,
+			                                               client_cert,
 			                                               NM_SETTING_802_1X_CK_SCHEME_PATH,
 			                                               NULL,
 			                                               error))
 				goto done;
 		} else {
 			if (!nm_setting_802_1x_set_client_cert (s_8021x,
-			                                        real_path,
+			                                        client_cert,
 			                                        NM_SETTING_802_1X_CK_SCHEME_PATH,
 			                                        NULL,
 			                                        error))
@@ -2249,92 +2208,126 @@ eap_tls_reader (const char *eap_method,
 	success = TRUE;
 
 done:
-	g_free (real_path);
-	g_free (ca_cert);
-	g_free (client_cert);
-	g_free (privkey);
-	g_free (privkey_password);
 	return success;
 }
 
 static gboolean
 eap_peap_reader (const char *eap_method,
+		 WPANetwork *wpan,
                  shvarFile *ifcfg,
                  shvarFile *keys,
                  NMSetting8021x *s_8021x,
-                 gboolean phase2,
+                 gboolean dummy,
                  GError **error)
 {
 	char *ca_cert = NULL;
-	char *real_cert_path = NULL;
-	char *inner_auth = NULL;
-	char *peapver = NULL;
+	char *phase1 = NULL;
+	char *phase2 = NULL;
 	char *lower;
 	char **list = NULL, **iter;
 	gboolean success = FALSE;
 
-	ca_cert = svGetValue (ifcfg, "IEEE_8021X_CA_CERT", FALSE);
+	ca_cert = ifcfg_mdv_wpa_network_get_val(wpan, "ca_cert");
 	if (ca_cert) {
-		real_cert_path = get_cert_file (ifcfg->fileName, ca_cert);
 		if (!nm_setting_802_1x_set_ca_cert (s_8021x,
-		                                    real_cert_path,
+		                                    ca_cert,
 		                                    NM_SETTING_802_1X_CK_SCHEME_PATH,
 		                                    NULL,
 		                                    error))
 			goto done;
 	} else {
 		PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: missing "
-		             "IEEE_8021X_CA_CERT for EAP method '%s'; this is"
+		             "ca_cert for EAP method '%s'; this is"
 		             " insecure!",
 		             eap_method);
 	}
 
-	peapver = svGetValue (ifcfg, "IEEE_8021X_PEAP_VERSION", FALSE);
-	if (peapver) {
-		if (!strcmp (peapver, "0"))
-			g_object_set (s_8021x, NM_SETTING_802_1X_PHASE1_PEAPVER, "0", NULL);
-		else if (!strcmp (peapver, "1"))
-			g_object_set (s_8021x, NM_SETTING_802_1X_PHASE1_PEAPVER, "1", NULL);
-		else {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
-			             "Unknown IEEE_8021X_PEAP_VERSION value '%s'",
-			             peapver);
-			goto done;
+	phase1 = ifcfg_mdv_wpa_network_get_val(wpan, "phase1");
+	if (phase1) {
+		list = g_strsplit_set(phase1, " ", 0);
+		for (iter = list; iter && *iter; iter++) {
+			char *p;
+
+		       if (!**iter)
+		       		continue;
+
+			p = strchr(*iter, '=');
+			if (p) {
+				*p++ = '\0';
+				if (!strcmp(*iter, "peapver")) {
+					if (!strcmp (p, "0"))
+						g_object_set (s_8021x, NM_SETTING_802_1X_PHASE1_PEAPVER, "0", NULL);
+					else if (!strcmp (p, "1"))
+						g_object_set (s_8021x, NM_SETTING_802_1X_PHASE1_PEAPVER, "1", NULL);
+					else {
+						g_set_error (error, ifcfg_plugin_error_quark (), 0,
+						     "Unknown peapver value '%s'",
+			             p);
+						goto done;
+					}
+				} else if (!strcmp(*iter, "peaplabel")) {
+					if (!strcmp(p, "1")) {
+						g_object_set (s_8021x, NM_SETTING_802_1X_PHASE1_PEAPLABEL, "1", NULL);
+					}
+				}
+			} else
+				PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: incorrect "
+		             "phase1 parameter '%s' EAP method '%s';"
+			     " key=value expected!",
+		             *iter, eap_method);
 		}
+		if (list)
+			g_strfreev(list);
 	}
 
-	if (svTrueValue (ifcfg, "IEEE_8021X_PEAP_FORCE_NEW_LABEL", FALSE))
-		g_object_set (s_8021x, NM_SETTING_802_1X_PHASE1_PEAPLABEL, "1", NULL);
-
-	inner_auth = svGetValue (ifcfg, "IEEE_8021X_INNER_AUTH_METHODS", FALSE);
-	if (!inner_auth) {
+	phase2 = ifcfg_mdv_wpa_network_get_val(wpan, "phase2");
+	if (!phase2) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-		             "Missing IEEE_8021X_INNER_AUTH_METHODS.");
+		             "Missing phase2 (PEAP inner authentication parameters).");
 		goto done;
 	}
 
 	/* Handle options for the inner auth method */
-	list = g_strsplit (inner_auth, " ", 0);
+	list = g_strsplit (phase2, " ", 0);
 	for (iter = list; iter && *iter; iter++) {
-		if (!strlen (*iter))
+		char *p;
+
+		if (!**iter)
 			continue;
 
-		if (   !strcmp (*iter, "MSCHAPV2")
-		    || !strcmp (*iter, "MD5")
-		    || !strcmp (*iter, "GTC")) {
-			if (!eap_simple_reader (*iter, ifcfg, keys, s_8021x, TRUE, error))
+		p = strchr(*iter, '=');
+		if (!p) {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				     "Incorrect phase2 parameter '%s'; key=value expected.", *iter);
+			goto done;
+		}
+		*p++ = '\0';
+		if (!strcmp(*iter, "auth")) {
+			if (   !strcmp (p, "MSCHAPV2")
+			    || !strcmp (p, "MD5")
+			    || !strcmp (p, "GTC")) {
+				if (!eap_simple_reader (p, wpan, ifcfg, keys, s_8021x, TRUE, error))
+					goto done;
+			} else if (!strcmp (p, "TLS")) {
+				if (!eap_tls_reader (p, wpan, ifcfg, keys, s_8021x, TRUE, error))
+					goto done;
+			} else {
+				g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				     "Unknown PEAP inner authentication method 'auth=%s'.",
+				  p);
 				goto done;
-		} else if (!strcmp (*iter, "TLS")) {
-			if (!eap_tls_reader (*iter, ifcfg, keys, s_8021x, TRUE, error))
-				goto done;
+			}
+		} else if (!strcmp (*iter, "autheap")) {
+			/* These parameters are for EAP-TTLS */
+			continue;
 		} else {
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
-			             "Unknown IEEE_8021X_INNER_AUTH_METHOD '%s'.",
-			             *iter);
+			             "Unknown phase2 inner authentication method '%s=%s'.",
+			             *iter, p);
 			goto done;
 		}
 
-		lower = g_ascii_strdown (*iter, -1);
+		lower = g_ascii_strdown (p, -1);
 		g_object_set (s_8021x, NM_SETTING_802_1X_PHASE2_AUTH, lower, NULL);
 		g_free (lower);
 		break;
@@ -2342,7 +2335,7 @@ eap_peap_reader (const char *eap_method,
 
 	if (!nm_setting_802_1x_get_phase2_auth (s_8021x)) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-		             "No valid IEEE_8021X_INNER_AUTH_METHODS found.");
+		             "No valid inner authentication methods found.");
 		goto done;
 	}
 
@@ -2351,86 +2344,108 @@ eap_peap_reader (const char *eap_method,
 done:
 	if (list)
 		g_strfreev (list);
-	g_free (inner_auth);
-	g_free (peapver);
-	g_free (real_cert_path);
-	g_free (ca_cert);
 	return success;
 }
 
 static gboolean
 eap_ttls_reader (const char *eap_method,
+		 WPANetwork *wpan,
                  shvarFile *ifcfg,
                  shvarFile *keys,
                  NMSetting8021x *s_8021x,
-                 gboolean phase2,
+                 gboolean dummy,
                  GError **error)
 {
 	gboolean success = FALSE;
 	char *anon_ident = NULL;
 	char *ca_cert = NULL;
-	char *real_cert_path = NULL;
-	char *inner_auth = NULL;
-	char *tmp;
+	char *phase2 = NULL;
 	char **list = NULL, **iter;
 
-	ca_cert = svGetValue (ifcfg, "IEEE_8021X_CA_CERT", FALSE);
+	ca_cert = ifcfg_mdv_wpa_network_get_val(wpan, "ca_cert");
 	if (ca_cert) {
-		real_cert_path = get_cert_file (ifcfg->fileName, ca_cert);
 		if (!nm_setting_802_1x_set_ca_cert (s_8021x,
-		                                    real_cert_path,
+		                                    ca_cert,
 		                                    NM_SETTING_802_1X_CK_SCHEME_PATH,
 		                                    NULL,
 		                                    error))
 			goto done;
 	} else {
 		PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: missing "
-		             "IEEE_8021X_CA_CERT for EAP method '%s'; this is"
+		             "ca_cert for EAP method '%s'; this is"
 		             " insecure!",
 		             eap_method);
 	}
 
-	anon_ident = svGetValue (ifcfg, "IEEE_8021X_ANON_IDENTITY", FALSE);
+	anon_ident = ifcfg_mdv_wpa_network_get_val(wpan, "anonymous_identity");
 	if (anon_ident && strlen (anon_ident))
 		g_object_set (s_8021x, NM_SETTING_802_1X_ANONYMOUS_IDENTITY, anon_ident, NULL);
 
-	tmp = svGetValue (ifcfg, "IEEE_8021X_INNER_AUTH_METHODS", FALSE);
-	if (!tmp) {
+	phase2 = ifcfg_mdv_wpa_network_get_val(wpan, "phase2");
+	if (!phase2) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-		             "Missing IEEE_8021X_INNER_AUTH_METHODS.");
+		             "Missing phase2 (TTLS inner authentication parameters).");
 		goto done;
 	}
 
-	inner_auth = g_ascii_strdown (tmp, -1);
-	g_free (tmp);
-
 	/* Handle options for the inner auth method */
-	list = g_strsplit (inner_auth, " ", 0);
+	list = g_strsplit (phase2, " ", 0);
 	for (iter = list; iter && *iter; iter++) {
-		if (!strlen (*iter))
+		gboolean  auth = FALSE, autheap = FALSE;
+		char *p, *lower = NULL;
+
+		if (!**iter)
 			continue;
 
-		if (   !strcmp (*iter, "mschapv2")
-		    || !strcmp (*iter, "mschap")
-		    || !strcmp (*iter, "pap")
-		    || !strcmp (*iter, "chap")) {
-			if (!eap_simple_reader (*iter, ifcfg, keys, s_8021x, TRUE, error))
-				goto done;
-			g_object_set (s_8021x, NM_SETTING_802_1X_PHASE2_AUTH, *iter, NULL);
-		} else if (!strcmp (*iter, "eap-tls")) {
-			if (!eap_tls_reader (*iter, ifcfg, keys, s_8021x, TRUE, error))
-				goto done;
-			g_object_set (s_8021x, NM_SETTING_802_1X_PHASE2_AUTHEAP, "tls", NULL);
-		} else if (!strcmp (*iter, "eap-mschapv2") || !strcmp (*iter, "eap-md5")) {
-			if (!eap_simple_reader (*iter, ifcfg, keys, s_8021x, TRUE, error))
-				goto done;
-			g_object_set (s_8021x, NM_SETTING_802_1X_PHASE2_AUTHEAP, (*iter + strlen ("eap-")), NULL);
-		} else {
+		p = strchr(*iter, '=');
+		if (!p) {
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
-			             "Unknown IEEE_8021X_INNER_AUTH_METHOD '%s'.",
-			             *iter);
+				     "Incorrect phase2 parameter '%s'; key=value expected.", *iter);
 			goto done;
 		}
+		*p++ = '\0';
+
+		if (!strcmp(*iter, "auth")) {
+			auth = TRUE;
+			if (   !strcmp (p, "MSCHAPV2")
+			    || !strcmp (p, "MSCHAP")
+			    || !strcmp (p, "PAP")
+			    || !strcmp (p, "CHAP")) {
+				if (!eap_simple_reader (p, wpan, ifcfg, keys, s_8021x, TRUE, error))
+					goto done;
+			} else {
+				g_set_error (error, ifcfg_plugin_error_quark (), 0,
+					     "Unknown TTLS inner authentication method 'auth=%s'.",
+					     p);
+				goto done;
+			}
+		} else if (!strcmp(*iter, "autheap")) {
+			autheap = TRUE;
+			if (!strcmp (p, "TLS")) {
+				if (!eap_tls_reader (p, wpan, ifcfg, keys, s_8021x, TRUE, error))
+					goto done;
+			} else if (!strcmp (p, "MSCHAPV2")
+				|| !strcmp (p, "MD5")) {
+				if (!eap_simple_reader (p, wpan, ifcfg, keys, s_8021x, TRUE, error))
+					goto done;
+			} else {
+				g_set_error (error, ifcfg_plugin_error_quark (), 0,
+					     "Unknown TTLS inner authentication method 'autheap=%s'.",
+					     p);
+				goto done;
+			}
+		} else {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			             "Unknown phase2 inner authentication method '%s=%s'.",
+			             *iter, p);
+			goto done;
+		}
+		lower = g_ascii_strdown (p, -1);
+		if (auth)
+			g_object_set (s_8021x, NM_SETTING_802_1X_PHASE2_AUTH, lower, NULL);
+		if (autheap)
+			g_object_set (s_8021x, NM_SETTING_802_1X_PHASE2_AUTHEAP, p, NULL);
+		g_free (lower);
 		break;
 	}
 
@@ -2439,10 +2454,6 @@ eap_ttls_reader (const char *eap_method,
 done:
 	if (list)
 		g_strfreev (list);
-	g_free (inner_auth);
-	g_free (real_cert_path);
-	g_free (ca_cert);
-	g_free (anon_ident);
 	return success;
 }
 
@@ -2497,7 +2508,7 @@ fill_8021x (shvarFile *ifcfg,
 			}
 
 			/* Parse EAP method specific options */
-			if (!(*eap->reader)(lower, ifcfg, keys, s_8021x, FALSE, error)) {
+			if (!(*eap->reader)(lower, wpan, ifcfg, keys, s_8021x, FALSE, error)) {
 				g_free (lower);
 				goto error;
 			}
