@@ -2841,6 +2841,7 @@ make_wireless_setting (shvarFile *ifcfg,
 		g_object_set (s_wireless, NM_SETTING_WIRELESS_MODE, mode, NULL);
 	}
 
+#if 0
 	value = svGetValue (ifcfg, "WIRELESS_BSSID", FALSE);
 	if (value) {
 		struct ether_addr *eth;
@@ -2858,6 +2859,7 @@ make_wireless_setting (shvarFile *ifcfg,
 		g_object_set (s_wireless, NM_SETTING_WIRELESS_BSSID, bssid, NULL);
 		g_byte_array_free (bssid, TRUE);
 	}
+#endif
 
 	value = svGetValue (ifcfg, "WIRELESS_CHANNEL", FALSE);
 	if (value) {
