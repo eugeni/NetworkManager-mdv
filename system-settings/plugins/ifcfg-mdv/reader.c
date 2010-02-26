@@ -98,7 +98,6 @@ static gboolean eap_ttls_reader (const char *eap_method,
                                  gboolean phase2,
                                  GError **error);
 
-
 static gboolean
 get_int (const char *str, int *value)
 {
@@ -264,46 +263,63 @@ read_mac_address (shvarFile *ifcfg, GByteArray **array, GError **error)
 	return TRUE;
 }
 
+/* This largely duplicates str_from_wpa, but ifcfg and wpa_supplicant
+ * use different quoting rules */
 static GByteArray *
-parse_ssid(char *value, GError **error)
+parse_ssid(char *value, gboolean shell, GError **error)
 {
 	gsize ssid_len = 0, value_len = strlen (value);
 	char *p = value, *tmp;
 	char buf[33];
 	GByteArray *a;
 
+	value = g_strdup(value);
+	if (!value)
+		return NULL;
+
 	ssid_len = value_len;
 	if (   (value_len >= 2)
-	    && (value[0] == '"')
-	    && (value[value_len - 1] == '"')) {
-		/* Strip the quotes and unescape */
-		p = value + 1;
-		value[value_len - 1] = '\0';
-		svUnescape (p);
+	    && ((value[0] == '"') || (shell && value[0] == '\''))
+	    && (value[value_len - 1] == value[0])) {
+		/* if wpa_supplicant: just strip the quotes
+		 * if ifcfg: unescape */
+		if (shell) {
+			svUnescape (value);
+			p = value;
+		} else {
+			value[value_len - 1] = '\0';
+			p = value + 1;
+		}
 		ssid_len = strlen (p);
-	} else if ((value_len > 2) && (strncmp (value, "0x", 2) == 0)) {
+	} else if ((value_len > 2) && (!shell || strncmp (value, "0x", 2) == 0)) {
 		/* Hex representation */
 		if (value_len % 2) {
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
 				     "Invalid SSID '%s' size (looks like hex but length not multiple of 2)",
 				     value);
-			return NULL;
+			goto error;
 		}
 
-		p = value + 2;
+		if (shell) {
+			value += 2;
+			value_len -= 2;
+		}
+
+		p = value;
 		while (*p) {
 			if (!isxdigit (*p)) {
 				g_set_error (error, ifcfg_plugin_error_quark (), 0,
 					     "Invalid SSID '%s' character (looks like hex SSID but '%c' isn't a hex digit)",
 					     value, *p);
-				return NULL;
+				goto error;
 			}
 			p++;
 		}
 
-		tmp = utils_hexstr2bin (value + 2, value_len - 2);
-		ssid_len  = (value_len - 2) / 2;
+		tmp = utils_hexstr2bin (value, value_len);
+		ssid_len  = (value_len) / 2;
 		memcpy (buf, tmp, ssid_len);
+		g_free(tmp);
 		p = &buf[0];
 	}
 
@@ -311,13 +327,18 @@ parse_ssid(char *value, GError **error)
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 			     "Invalid SSID '%s' (size %zu not between 1 and 32 inclusive)",
 			     value, ssid_len);
-		return NULL;
+		goto error;
 	}
 
 	a = g_byte_array_sized_new (ssid_len);
 	if (a)
 		g_byte_array_append (a, (const guint8 *) p, ssid_len);
+	g_free(value);
 	return a;
+
+error:
+	g_free(value);
+	return NULL;
 }
 
 static void
@@ -1885,7 +1906,7 @@ fill_wpa_ciphers (WPANetwork *wpan,
                   gboolean group,
                   gboolean adhoc)
 {
-	char *value = NULL, *p;
+	char *value;
 	char **list = NULL, **iter;
 	int i = 0;
 
@@ -1893,18 +1914,11 @@ fill_wpa_ciphers (WPANetwork *wpan,
 	if (!value)
 		return TRUE;
 
-	value = p = g_strdup (value);
-	if (!value)
-		return TRUE;
-
-	/* Strip quotes */
-	if (p[0] == '"')
-		p++;
-	if (p[strlen (p) - 1] == '"')
-		p[strlen (p) - 1] = '\0';
-
-	list = g_strsplit_set (p, " ", 0);
+	list = g_strsplit_set (value, " ", 0);
 	for (iter = list; iter && *iter; iter++, i++) {
+		if (!*iter)
+			continue;
+
 		/* Ad-Hoc configurations cannot have pairwise ciphers, and can only
 		 * have one group cipher.  Ignore any additional group ciphers and
 		 * any pairwise ciphers specified.
@@ -1944,11 +1958,8 @@ fill_wpa_ciphers (WPANetwork *wpan,
 
 	if (list)
 		g_strfreev (list);
-	g_free (value);
 	return TRUE;
 }
-
-#define WPA_PMK_LEN 32
 
 static char *
 parse_wpa_psk (WPANetwork *wpan,
@@ -1969,23 +1980,35 @@ parse_wpa_psk (WPANetwork *wpan,
 
 	if (!psk) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-		             "Missing WPA_PSK for WPA-PSK key management");
+		             "Missing WPA psk for WPA-PSK key management");
 		return NULL;
 	}
 
 	psk = p = g_strdup (psk);
 
-	if (p[0] == '"' && psk[strlen (psk) - 1] == '"')
+	if (p[0] == '"') {
+		if (psk[strlen (psk) - 1] != '"') {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				     "Invalid WPA psk (unterminated quote)");
+			goto out;
+		}
 		quoted = TRUE;
+	}
 
-	if (!quoted && (strlen (psk) == 64)) {
+	if (!quoted) {
 		/* Verify the hex PSK; 64 digits */
-		while (*p) {
-			if (!isxdigit (*p++)) {
-				g_set_error (error, ifcfg_plugin_error_quark (), 0,
-				             "Invalid WPA_PSK (contains non-hexadecimal characters)");
-				goto out;
+	       	if (strlen (psk) == 64) {
+			while (*p) {
+				if (!isxdigit (*p++)) {
+					g_set_error (error, ifcfg_plugin_error_quark (), 0,
+						     "Invalid WPA psk (contains non-hexadecimal characters)");
+					goto out;
+				}
 			}
+		} else {
+				g_set_error (error, ifcfg_plugin_error_quark (), 0,
+					     "Invalid WPA psk (hex key not equal 64 characters)");
+				goto out;
 		}
 		hashed = g_strdup (psk);
 	} else {
@@ -1995,16 +2018,14 @@ parse_wpa_psk (WPANetwork *wpan,
 		 * and between 8 and 63 characters as a passphrase.
 		 */
 
-		if (quoted) {
-			/* Get rid of the quotes */
-			p++;
-			p[strlen (p) - 1] = '\0';
-		}
+		/* Get rid of the quotes */
+		p++;
+		p[strlen (p) - 1] = '\0';
 
 		/* Length check */
 		if (strlen (p) < 8 || strlen (p) > 63) {
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
-			             "Invalid WPA_PSK (passphrases must be between "
+			             "Invalid WPA psk (passphrases must be between "
 			             "8 and 63 characters long (inclusive))");
 			goto out;
 		}
@@ -2014,8 +2035,7 @@ parse_wpa_psk (WPANetwork *wpan,
 
 	if (!hashed) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-		             "Invalid WPA_PSK (doesn't look like a passphrase or hex key)");
-		goto out;
+		             "Invalid WPA psk (doesn't look like a passphrase or hex key)");
 	}
 
 out:
@@ -2057,9 +2077,10 @@ eap_simple_reader (const char *eap_method,
                    gboolean phase2,
                    GError **error)
 {
-	char *value;
+	char *value = NULL;
 
-	value = ifcfg_mdv_wpa_network_get_val(wpan, "identity");
+	/* FIXME wpa identity can contain '\0' */
+	value = ifcfg_mdv_wpa_network_get_str(wpan, "identity");
 	if (!value) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 		             "Missing identity for EAP method '%s'.",
@@ -2067,8 +2088,10 @@ eap_simple_reader (const char *eap_method,
 		return FALSE;
 	}
 	g_object_set (s_8021x, NM_SETTING_802_1X_IDENTITY, value, NULL);
+	g_free(value);
 
-	value = ifcfg_mdv_wpa_network_get_val (wpan, "password");
+	/* FIXME can we expect hash:XXX password? */
+	value = ifcfg_mdv_wpa_network_get_str (wpan, "password");
 	if (!value) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 		             "Missing password for EAP method '%s'.",
@@ -2076,6 +2099,7 @@ eap_simple_reader (const char *eap_method,
 		return FALSE;
 	}
 	g_object_set (s_8021x, NM_SETTING_802_1X_PASSWORD, value, NULL);
+	g_free(value);
 
 	return TRUE;
 }
@@ -2089,7 +2113,7 @@ eap_tls_reader (const char *eap_method,
                 gboolean phase2,
                 GError **error)
 {
-	char *value;
+	char *value = NULL;
 	char *ca_cert = NULL;
 	char *client_cert = NULL;
 	char *privkey = NULL;
@@ -2097,7 +2121,8 @@ eap_tls_reader (const char *eap_method,
 	gboolean success = FALSE;
 	NMSetting8021xCKFormat privkey_format = NM_SETTING_802_1X_CK_FORMAT_UNKNOWN;
 
-	value = ifcfg_mdv_wpa_network_get_val(wpan, "identity");
+	/* FIXME wpa identity can contain '\0' */
+	value = ifcfg_mdv_wpa_network_get_str(wpan, "identity");
 	if (!value) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 		             "Missing identity for EAP method '%s'.",
@@ -2106,7 +2131,7 @@ eap_tls_reader (const char *eap_method,
 	}
 	g_object_set (s_8021x, NM_SETTING_802_1X_IDENTITY, value, NULL);
 
-	ca_cert = ifcfg_mdv_wpa_network_get_val(wpan,
+	ca_cert = ifcfg_mdv_wpa_network_get_str(wpan,
 	                      phase2 ? "ca_cert2" : "ca_cert");
 	if (ca_cert) {
 		if (phase2) {
@@ -2132,7 +2157,7 @@ eap_tls_reader (const char *eap_method,
 	}
 
 	/* Private key password */
-	privkey_password = ifcfg_mdv_wpa_network_get_val(wpan,
+	privkey_password = ifcfg_mdv_wpa_network_get_str(wpan,
 	                               phase2 ? "private_key2_password": "private_key_password");
 	if (!privkey_password) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
@@ -2143,7 +2168,7 @@ eap_tls_reader (const char *eap_method,
 	}
 
 	/* The private key itself */
-	privkey = ifcfg_mdv_wpa_network_get_val(wpan,
+	privkey = ifcfg_mdv_wpa_network_get_str(wpan,
 	                      phase2 ? "private_key2" : "private_key");
 	if (!privkey) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
@@ -2178,7 +2203,7 @@ eap_tls_reader (const char *eap_method,
 	 */
 	if (   privkey_format == NM_SETTING_802_1X_CK_FORMAT_RAW_KEY
 	    || privkey_format == NM_SETTING_802_1X_CK_FORMAT_X509) {
-		client_cert = ifcfg_mdv_wpa_network_get_val(wpan,
+		client_cert = ifcfg_mdv_wpa_network_get_str(wpan,
 		                          phase2 ? "client_cert2" : "client_cert");
 		if (!client_cert) {
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
@@ -2208,6 +2233,11 @@ eap_tls_reader (const char *eap_method,
 	success = TRUE;
 
 done:
+	g_free(value);
+	g_free(ca_cert);
+	g_free(privkey_password);
+	g_free(privkey);
+	g_free(client_cert);
 	return success;
 }
 
@@ -2227,7 +2257,7 @@ eap_peap_reader (const char *eap_method,
 	char **list = NULL, **iter;
 	gboolean success = FALSE;
 
-	ca_cert = ifcfg_mdv_wpa_network_get_val(wpan, "ca_cert");
+	ca_cert = ifcfg_mdv_wpa_network_get_str(wpan, "ca_cert");
 	if (ca_cert) {
 		if (!nm_setting_802_1x_set_ca_cert (s_8021x,
 		                                    ca_cert,
@@ -2242,7 +2272,7 @@ eap_peap_reader (const char *eap_method,
 		             eap_method);
 	}
 
-	phase1 = ifcfg_mdv_wpa_network_get_val(wpan, "phase1");
+	phase1 = ifcfg_mdv_wpa_network_get_str(wpan, "phase1");
 	if (phase1) {
 		list = g_strsplit_set(phase1, " ", 0);
 		for (iter = list; iter && *iter; iter++) {
@@ -2280,7 +2310,7 @@ eap_peap_reader (const char *eap_method,
 			g_strfreev(list);
 	}
 
-	phase2 = ifcfg_mdv_wpa_network_get_val(wpan, "phase2");
+	phase2 = ifcfg_mdv_wpa_network_get_str(wpan, "phase2");
 	if (!phase2) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 		             "Missing phase2 (PEAP inner authentication parameters).");
@@ -2342,6 +2372,9 @@ eap_peap_reader (const char *eap_method,
 	success = TRUE;
 
 done:
+	g_free(ca_cert);
+	g_free(phase1);
+	g_free(phase2);
 	if (list)
 		g_strfreev (list);
 	return success;
@@ -2362,7 +2395,7 @@ eap_ttls_reader (const char *eap_method,
 	char *phase2 = NULL;
 	char **list = NULL, **iter;
 
-	ca_cert = ifcfg_mdv_wpa_network_get_val(wpan, "ca_cert");
+	ca_cert = ifcfg_mdv_wpa_network_get_str(wpan, "ca_cert");
 	if (ca_cert) {
 		if (!nm_setting_802_1x_set_ca_cert (s_8021x,
 		                                    ca_cert,
@@ -2377,11 +2410,11 @@ eap_ttls_reader (const char *eap_method,
 		             eap_method);
 	}
 
-	anon_ident = ifcfg_mdv_wpa_network_get_val(wpan, "anonymous_identity");
+	anon_ident = ifcfg_mdv_wpa_network_get_str(wpan, "anonymous_identity");
 	if (anon_ident && strlen (anon_ident))
 		g_object_set (s_8021x, NM_SETTING_802_1X_ANONYMOUS_IDENTITY, anon_ident, NULL);
 
-	phase2 = ifcfg_mdv_wpa_network_get_val(wpan, "phase2");
+	phase2 = ifcfg_mdv_wpa_network_get_str(wpan, "phase2");
 	if (!phase2) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 		             "Missing phase2 (TTLS inner authentication parameters).");
@@ -2452,6 +2485,9 @@ eap_ttls_reader (const char *eap_method,
 	success = TRUE;
 
 done:
+	g_free(ca_cert);
+	g_free(anon_ident);
+	g_free(phase2);
 	if (list)
 		g_strfreev (list);
 	return success;
@@ -2478,11 +2514,10 @@ fill_8021x (shvarFile *ifcfg,
 		return NULL;
 	}
 
-	list = g_strsplit (value, " ", 0);
-
 	s_8021x = (NMSetting8021x *) nm_setting_802_1x_new ();
 
 	/* Validate and handle each EAP method */
+	list = g_strsplit (value, " ", 0);
 	for (iter = list; iter && *iter; iter++) {
 		EAPReader *eap = &eap_readers[0];
 		gboolean found = FALSE;
@@ -2507,6 +2542,7 @@ fill_8021x (shvarFile *ifcfg,
 			/* Parse EAP method specific options */
 			if (!(*eap->reader)(lower, wpan, ifcfg, keys, s_8021x, FALSE, error)) {
 				g_free (lower);
+				g_strfreev(list);
 				goto error;
 			}
 			nm_setting_802_1x_add_eap_method (s_8021x, lower);
@@ -2759,7 +2795,7 @@ make_wireless_security_setting (shvarFile *ifcfg,
 				gchar *w_ssid = ifcfg_mdv_wpa_network_get_val(wpan, "ssid");
 
 				if (w_ssid)
-					b_ssid = parse_ssid(w_ssid, error);
+					b_ssid = parse_ssid(w_ssid, FALSE, error);
 
 				if (b_ssid) {
 					if (b_ssid->len == ssid->len && memcmp(b_ssid->data, ssid->data, ssid->len) == 0)
@@ -2846,7 +2882,7 @@ make_wireless_setting (shvarFile *ifcfg,
 
 	value = svGetValue (ifcfg, "WIRELESS_ESSID", TRUE);
 	if (value) {
-		array = parse_ssid (value, error);
+		array = parse_ssid (value, TRUE, error);
 		g_free (value);
 
 		if (array) {

@@ -1,7 +1,11 @@
 #include <errno.h>
+#include <string.h>
 #include <glib.h>
 #include <glib/gstdio.h>
+
+#include "utils.h"
 #include "common.h"
+
 #include "parse_wpa_supplicant_conf.h"
 
 struct _WPAConfig {
@@ -209,6 +213,41 @@ ifcfg_mdv_wpa_network_set_val(WPANetwork *wpan, const gchar *key, const gchar *v
 	k = g_strdup(key);
 	v = g_strdup(val);
 	g_hash_table_replace(wpan->keyvals, k, v);
+}
+
+gchar *
+ifcfg_mdv_wpa_network_get_str(WPANetwork *wpan, const gchar *key)
+{
+	gchar *value, *str = NULL;
+
+	g_return_val_if_fail(wpan != NULL, NULL);
+	g_return_val_if_fail(key != NULL, NULL);
+
+	value = ifcfg_mdv_wpa_network_get_val(wpan, key);
+	if (!value)
+		return NULL;
+
+	if (*value == '"') {
+		const char *pos;
+		size_t len;
+		value++;
+		pos = strrchr(value, '"');
+		if (pos == NULL || pos[1] != '\0')
+			return NULL;
+		len = pos - value;
+		str = g_malloc(len + 1);
+		if (str == NULL)
+			return NULL;
+		memcpy(str, value, len);
+		str[len] = '\0';
+	} else {
+		size_t hlen = strlen(value);
+		str = utils_hexstr2bin(value, hlen);
+		if (str == NULL)
+			return NULL;
+	}
+
+	return str;
 }
 
 void
