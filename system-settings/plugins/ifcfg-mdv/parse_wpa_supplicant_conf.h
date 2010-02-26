@@ -16,6 +16,7 @@ void ifcfg_mdv_wpa_network_free(WPANetwork *);
 
 gpointer ifcfg_mdv_wpa_network_get_val(WPANetwork *, const gchar *);
 void ifcfg_mdv_wpa_network_set_val(WPANetwork *, const gchar *, const gchar *);
+void ifcfg_mdv_wpa_network_unset(WPANetwork *, const gchar *);
 
 gboolean ifcfg_mdv_wpa_network_save(WPANetwork *, gchar *, GError **);
 
