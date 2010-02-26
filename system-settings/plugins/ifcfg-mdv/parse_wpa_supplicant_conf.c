@@ -211,6 +211,15 @@ ifcfg_mdv_wpa_network_set_val(WPANetwork *wpan, const gchar *key, const gchar *v
 	g_hash_table_replace(wpan->keyvals, k, v);
 }
 
+void
+ifcfg_mdv_wpa_network_unset(WPANetwork *wpan, const gchar *key)
+{
+	g_return_if_fail(wpan != NULL);
+	g_return_if_fail(key != NULL);
+
+	g_hash_table_remove(wpan->keyvals, key);
+}
+
 static gboolean
 add_line(GSList **list, gchar *s)
 {
