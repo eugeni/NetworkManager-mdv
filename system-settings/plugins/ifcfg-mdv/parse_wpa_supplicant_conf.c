@@ -251,6 +251,39 @@ ifcfg_mdv_wpa_network_get_str(WPANetwork *wpan, const gchar *key)
 }
 
 void
+ifcfg_mdv_wpa_network_set_str(WPANetwork *wpan, const gchar *key, const gchar *val)
+{
+	const gchar *p;
+	gchar *str;
+	gboolean need_hex = FALSE;
+
+	/* We may get NULL for non-existing values */
+	if (!val) {
+		ifcfg_mdv_wpa_network_unset(wpan, key);
+		return;
+	}
+
+	for (p = val; *p; p++)
+		if (!g_ascii_isprint(*p)) {
+			need_hex = TRUE;
+			break;
+		}
+
+	if (need_hex)
+		str = utils_bin2hexstr(val, strlen(val), -1);
+	else
+		str = g_strdup_printf("\"%s\"", val);
+
+	if (str)
+		ifcfg_mdv_wpa_network_set_val(wpan, key, str);
+#if 0
+	else
+		PLUGIN_WARN(IFCFG_PLUGIN_NAME, "    warning: could not set value for wpa key %s", key);
+#endif
+	g_free(str);
+}
+
+void
 ifcfg_mdv_wpa_network_unset(WPANetwork *wpan, const gchar *key)
 {
 	g_return_if_fail(wpan != NULL);

@@ -343,7 +343,7 @@ write_object (NMSetting8021x *s_8021x,
 	 * may have been sent.
 	 */
 	if (path) {
-		ifcfg_mdv_wpa_network_set_val(wpan, objtype->ifcfg_key, path);
+		ifcfg_mdv_wpa_network_set_str(wpan, objtype->ifcfg_key, path);
 		return TRUE;
 	}
 
@@ -455,10 +455,11 @@ write_8021x_certs (NMSetting8021x *s_8021x,
 		goto out;
 
 	/* Private key password */
+	/* FIXME what about hash:XXX? */
 	if (phase2)
-		ifcfg_mdv_wpa_network_set_val(wpan, "private_key2_password", password);
+		ifcfg_mdv_wpa_network_set_str(wpan, "private_key2_password", password);
 	else
-		ifcfg_mdv_wpa_network_set_val(wpan, "private_key_password", password);
+		ifcfg_mdv_wpa_network_set_str(wpan, "private_key_password", password);
 
 	/* Client certificate */
 	if (is_pkcs12) {
@@ -532,13 +533,13 @@ write_8021x_setting (NMConnection *connection,
 	ifcfg_mdv_wpa_network_set_val(wpan, "eap", tmp ? tmp : NULL);
 	g_free (tmp);
 
-	ifcfg_mdv_wpa_network_set_val(wpan, "identity",
+	ifcfg_mdv_wpa_network_set_str(wpan, "identity",
 	            nm_setting_802_1x_get_identity (s_8021x));
 
-	ifcfg_mdv_wpa_network_set_val(wpan, "anonymous_identity",
+	ifcfg_mdv_wpa_network_set_str(wpan, "anonymous_identity",
 	            nm_setting_802_1x_get_anonymous_identity (s_8021x));
 
-	ifcfg_mdv_wpa_network_set_val(wpan, "password", nm_setting_802_1x_get_password (s_8021x));
+	ifcfg_mdv_wpa_network_set_str(wpan, "password", nm_setting_802_1x_get_password (s_8021x));
 
 	str = g_string_new("");
 
@@ -555,11 +556,8 @@ write_8021x_setting (NMConnection *connection,
 		g_string_printf(str, "peaplabel=%s", value);
 	}
 
-	if (str->len) {
-		g_string_prepend_c(str, '"');
-		g_string_append_c(str, '"');
-		ifcfg_mdv_wpa_network_set_val(wpan, "phase1", str->str);
-	}
+	if (str->len)
+		ifcfg_mdv_wpa_network_set_str(wpan, "phase1", str->str);
 	g_string_free(str, TRUE);
 
 	/* Phase2 auth methods */
@@ -582,11 +580,8 @@ write_8021x_setting (NMConnection *connection,
 		g_free (tmp);
 	}
 
-	if (phase2_auth->len) {
-		g_string_prepend_c(phase2_auth, '"');
-		g_string_append_c(phase2_auth, '"');
-		ifcfg_mdv_wpa_network_set_val(wpan, "phase2", phase2_auth->str);
-	}
+	if (phase2_auth->len)
+		ifcfg_mdv_wpa_network_set_str(wpan, "phase2", phase2_auth->str);
 	g_string_free (phase2_auth, TRUE);
 
 	success = write_8021x_certs (s_8021x, wpan, FALSE, ifcfg, error);
