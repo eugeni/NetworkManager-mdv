@@ -12,11 +12,11 @@ libifcfg_mdv_io_la_SOURCES = \
 	writer.c \
 	writer.h \
 	common.h \
-	utils.c \
-	utils.h \
 	../ifcfg-rh/shvar.c \
 	../ifcfg-rh/shvar.h \
-	../ifcfg-rh/errors.c
+	../ifcfg-rh/errors.c \
+	../ifcfg-rh/utils.c \
+	../ifcfg-rh/utils.h
 
 INCLUDES = \
 	-I$(top_srcdir)/system-settings/plugins/ifcfg-rh \
