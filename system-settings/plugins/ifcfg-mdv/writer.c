@@ -51,22 +51,54 @@
 #define PLUGIN_WARN(pname, fmt, args...) \
 	{ g_warning ("   " pname ": " fmt, ##args); }
 
+
+/*
+ * ifcfg reader converts ASCII to HEX. This converts key back to ASCII
+ * before writing
+ */
+
+static gchar *
+wep4ifcfg(const gchar *value)
+{
+	gchar *s;
+	gsize len;
+	GString *str;
+
+	if (!value)
+		return NULL;
+
+	len = strlen(value);
+	str = g_string_new("");
+
+	if (len == 5 || len == 13) {
+		g_string_printf(str, "s:%s", value);
+	} else if (len == 10 || len == 26) {
+		gchar *p;
+		s = utils_hexstr2bin (value, len);
+		for (p = s; *p; p++) {
+			if (!isascii (*p)) {
+				g_free(s);
+				g_string_free(str, TRUE);
+				return g_strdup(value);
+			}
+		}
+		g_string_printf(str, "s:%s", s);
+		g_free(s);
+	} else {
+		PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: invalid WEP key length");
+		g_string_free(str, TRUE);
+		return NULL;
+	}
+
+	s = svEscape(str->str);
+	g_string_free(str, TRUE);
+	return s;
+}
 static void
 set_wep_secret (shvarFile *ifcfg, const char *key, const char *value, gboolean verbatim)
 {
-	// shvarFile *keyfile;
 	char *v = 0;
 	
-#if 0
-	/* Mandriva stores keys in actual ifcfg */
-	keyfile = utils_get_keys_ifcfg (ifcfg->fileName, TRUE);
-	if (!keyfile) {
-		PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: could not create key file for '%s'",
-		             ifcfg->fileName);
-		goto error;
-	}
-#endif
-
 	/* Clear the secret from the actual ifcfg */
 	svSetValue (ifcfg, key, NULL, FALSE);
 
@@ -74,24 +106,10 @@ set_wep_secret (shvarFile *ifcfg, const char *key, const char *value, gboolean v
 	if (!value)
 		return;
 
-	v = utils_wep4ifcfg(value);
-	if (!v) {
-		PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: invalid WEP key length");
+	v = wep4ifcfg(value);
+	if (!v)
 		return;
-	}
 
-#if 0
-	svSetValue (keyfile, key, value, verbatim);
-	if (svWriteFile (keyfile, 0600)) {
-		PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: could not update key file '%s'",
-		             keyfile->fileName);
-		svCloseFile (keyfile);
-		goto error;
-	}
-	svCloseFile (keyfile);
-	return;
-
-#endif
 	/* Try setting the secret in the actual ifcfg */
 	svSetValue (ifcfg, key, v, TRUE);
 	g_free(v);
