@@ -607,7 +607,7 @@ write_wireless_security_setting (NMConnection *connection,
                                  GError **error)
 {
 	NMSettingWirelessSecurity *s_wsec;
-	const char *key_mgmt, *auth_alg, *key, *proto, *cipher, *psk;
+	const char *key_mgmt, *auth_alg, *key, *proto, *cipher;
 	gboolean wep = FALSE, wpa = FALSE;
 	char *tmp;
 	guint32 i, num;
@@ -657,6 +657,9 @@ write_wireless_security_setting (NMConnection *connection,
 				svSetValue (ifcfg, "WIRELESS_ENC_MODE", "open", FALSE);
 			ifcfg_mdv_wpa_network_set_val(wpan, "auth_alg", "OPEN");
 		} else if (!strcmp (auth_alg, "leap")) {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				     "ifcfg-mdv does not support LEAP authentication");
+			return FALSE;
 #if 0
 			/* Not used by Mandriva */
 			svSetValue (ifcfg, "WIRELESS_ENC_MODE", "leap", FALSE);
@@ -747,25 +750,19 @@ write_wireless_security_setting (NMConnection *connection,
 	if (strlen (str->str))
 		ifcfg_mdv_wpa_network_set_val(wpan, "group", str->str);
 
-	g_string_free (str, TRUE);
 
 	/* WPA Passphrase */
 	if (wpa) {
-		GString *quoted = NULL;
-
-		psk = nm_setting_wireless_security_get_psk (s_wsec);
-		if (psk && (strlen (psk) != 64)) {
+		g_string_assign(str, nm_setting_wireless_security_get_psk(s_wsec));
+		if (str->len && str->len != 64) {
 			/* Quote the PSK since it's a passphrase */
-			quoted = g_string_sized_new (strlen (psk) + 2); /* 2 for quotes */
-			g_string_append_c (quoted, '"');
-			g_string_append (quoted, psk);
-			g_string_append_c (quoted, '"');
+			g_string_prepend_c (str, '"');
+			g_string_append_c (str, '"');
 		}
 
-		ifcfg_mdv_wpa_network_set_val(wpan, "psk", quoted ? quoted->str : psk);
-		if (quoted)
-			g_string_free (quoted, TRUE);
+		ifcfg_mdv_wpa_network_set_val(wpan, "psk", str->str);
 	}
+	g_string_free (str, TRUE);
 
 	return TRUE;
 }
@@ -962,6 +959,8 @@ write_connection_setting (NMSettingConnection *s_con, shvarFile *ifcfg)
 	}
 }
 
+#if 0
+No route file on Mandriva
 static gboolean
 write_route_file_legacy (const char *filename, NMSettingIP4Config *s_ip4, GError **error)
 {
@@ -1020,14 +1019,28 @@ error:
 
 	return success;
 }
+#endif
+
+static char *
+ip4_address_as_string (guint32 ip)
+{
+	char *ip_string;
+	struct in_addr tmp_addr;
+
+	tmp_addr.s_addr = ip;
+	ip_string = g_malloc0 (INET_ADDRSTRLEN + 1);
+	if (!inet_ntop (AF_INET, &tmp_addr, ip_string, INET_ADDRSTRLEN))
+	strcpy (ip_string, "(none)");
+	return ip_string;
+}
 
 static gboolean
 write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 {
 	NMSettingIP4Config *s_ip4;
 	const char *value;
-	char *addr_key, *prefix_key, *netmask_key, *gw_key, *metric_key, *tmp;
-	char *route_path = NULL;
+	char *addr_key, *prefix_key, *netmask_key, *gw_key, /**metric_key,*/ *tmp;
+	// char *route_path = NULL;
 	guint32 i, num;
 	GString *searches;
 	gboolean success = FALSE;
@@ -1044,31 +1057,51 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	if (!strcmp (value, NM_SETTING_IP4_CONFIG_METHOD_AUTO))
 		svSetValue (ifcfg, "BOOTPROTO", "dhcp", FALSE);
 	else if (!strcmp (value, NM_SETTING_IP4_CONFIG_METHOD_MANUAL))
-		svSetValue (ifcfg, "BOOTPROTO", "none", FALSE);
+		svSetValue (ifcfg, "BOOTPROTO", "static", FALSE);
+#if 0
 	else if (!strcmp (value, NM_SETTING_IP4_CONFIG_METHOD_LINK_LOCAL))
 		svSetValue (ifcfg, "BOOTPROTO", "autoip", FALSE);
 	else if (!strcmp (value, NM_SETTING_IP4_CONFIG_METHOD_SHARED))
 		svSetValue (ifcfg, "BOOTPROTO", "shared", FALSE);
+#endif
+	else {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		             "ifcfg-mdv: unsupported activation method '%s'", value);
+		return FALSE;
+	}
 
 	num = nm_setting_ip4_config_get_num_addresses (s_ip4);
-	for (i = 0; i < 254; i++) {
+	if (num > 1) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		     "ifcfg-mdv: multiple IPADDRs per interface are not supported");
+			return FALSE;
+	}
+	//for (i = 0; i < 254; i++) {
+	{
 		char buf[INET_ADDRSTRLEN + 1];
 		NMIP4Address *addr;
-		guint32 ip;
+		guint32 ip, netmask;
 
-		if (i == 0) {
+		// if (i == 0) {
 			addr_key = g_strdup ("IPADDR");
 			prefix_key = g_strdup ("PREFIX");
+			netmask_key = g_strdup ("NETMASK");
 			gw_key = g_strdup ("GATEWAY");
+#if 0
 		} else {
 			addr_key = g_strdup_printf ("IPADDR%d", i + 1);
 			prefix_key = g_strdup_printf ("PREFIX%d", i + 1);
 			gw_key = g_strdup_printf ("GATEWAY%d", i + 1);
 		}
+#endif
+		/* Clean PREFIX in case it was present, otherwise it
+		 * will fool reader.c next time */
+		svSetValue (ifcfg, prefix_key, NULL, FALSE);
 
-		if (i >= num) {
+		// if (i >= num) {
+		if (num == 0) {
 			svSetValue (ifcfg, addr_key, NULL, FALSE);
-			svSetValue (ifcfg, prefix_key, NULL, FALSE);
+			svSetValue (ifcfg, netmask_key, NULL, FALSE);
 			svSetValue (ifcfg, gw_key, NULL, FALSE);
 		} else {
 			addr = nm_setting_ip4_config_get_address (s_ip4, i);
@@ -1078,8 +1111,9 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 			inet_ntop (AF_INET, (const void *) &ip, &buf[0], sizeof (buf));
 			svSetValue (ifcfg, addr_key, &buf[0], FALSE);
 
-			tmp = g_strdup_printf ("%u", nm_ip4_address_get_prefix (addr));
-			svSetValue (ifcfg, prefix_key, tmp, FALSE);
+			netmask = nm_utils_ip4_prefix_to_netmask (nm_ip4_address_get_prefix (addr));
+			tmp = ip4_address_as_string(netmask);
+			svSetValue (ifcfg, netmask_key, tmp, FALSE);
 			g_free (tmp);
 
 			if (nm_ip4_address_get_gateway (addr)) {
@@ -1093,11 +1127,17 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 
 		g_free (addr_key);
 		g_free (prefix_key);
+		g_free (netmask_key);
 		g_free (gw_key);
 	}
 
 	num = nm_setting_ip4_config_get_num_dns (s_ip4);
-	for (i = 0; i < 254; i++) {
+	if (num > 2) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		     "ifcfg-mdv: max two DNS servers per interface are supported");
+			return FALSE;
+	}
+	for (i = 0; i <= 2; i++) {
 		char buf[INET_ADDRSTRLEN + 1];
 		guint32 ip;
 
@@ -1132,6 +1172,9 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	 * Mandriva supports DEFROUTE for PPP connections only, which are
 	 * currently not implemented by ifcfg-mdv
 	 */
+	if (nm_setting_ip4_config_get_never_default (s_ip4)){
+		PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: ignoring unsupported setting DEFROUTE=no");
+	}
 #if 0
 	/* DEFROUTE; remember that it has the opposite meaning from never-default */
 	svSetValue (ifcfg, "DEFROUTE",
@@ -1143,12 +1186,15 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	svSetValue (ifcfg, "PEERDNS", NULL, FALSE);
 	// svSetValue (ifcfg, "PEERROUTES", NULL, FALSE);
 	svSetValue (ifcfg, "DHCP_HOSTNAME", NULL, FALSE);
-	svSetValue (ifcfg, "DHCP_CLIENT_ID", NULL, FALSE);
+	// svSetValue (ifcfg, "DHCP_CLIENT_ID", NULL, FALSE);
 	if (!strcmp (value, NM_SETTING_IP4_CONFIG_METHOD_AUTO)) {
 		svSetValue (ifcfg, "PEERDNS",
 		            nm_setting_ip4_config_get_ignore_auto_dns (s_ip4) ? "no" : "yes",
 		            FALSE);
 
+		if (nm_setting_ip4_config_get_ignore_auto_routes (s_ip4)) {
+			PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: ignoring unsupported setting PEERROUTESno");
+		}
 #if 0
 		svSetValue (ifcfg, "PEERROUTES",
 		            nm_setting_ip4_config_get_ignore_auto_routes (s_ip4) ? "no" : "yes",
@@ -1159,11 +1205,18 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		if (value)
 			svSetValue (ifcfg, "DHCP_HOSTNAME", value, FALSE);
 
+		/* Mandriva does not support client ID */
 		value = nm_setting_ip4_config_get_dhcp_client_id (s_ip4);
-		if (value)
-			svSetValue (ifcfg, "DHCP_CLIENT_ID", value, FALSE);
+		if (value) {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			     "ifcfg-mdv: DHCP_CLIENT_ID is not supported");
+				return FALSE;
+			// svSetValue (ifcfg, "DHCP_CLIENT_ID", value, FALSE);
+		}
 	}
 
+#if 0
+	No routes on Mandriva
 	/* Static routes - route-<name> file */
 	route_path = utils_get_route_path (ifcfg->fileName);
 	if (!route_path) {
@@ -1171,7 +1224,15 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		             "Could not get route file path for '%s'", ifcfg->fileName);
 		goto out;
 	}
+#endif
 
+	num = nm_setting_ip4_config_get_num_routes (s_ip4);
+	if (num > 0) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		     "ifcfg-mdv: static routes are not supported");
+			return FALSE;
+	}
+#if 0
 	if (utils_has_route_file_new_syntax (route_path)) {
 		shvarFile *routefile;
 
@@ -1246,13 +1307,16 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		if (error && *error)
 			goto out;
 	}
+#endif
 
 	success = TRUE;
 
-out:
+// out:
 	return success;
 }
 
+#if 0
+No IPv6 on Mandriva
 static gboolean
 write_route6_file (const char *filename, NMSettingIP6Config *s_ip6, GError **error)
 {
@@ -1311,13 +1375,15 @@ error:
 	g_free (route_contents);
 	return success;
 }
+#endif
 
 static gboolean
 write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 {
 	NMSettingIP6Config *s_ip6;
-	NMSettingIP4Config *s_ip4;
+	// NMSettingIP4Config *s_ip4;
 	const char *value;
+#if 0
 	char *addr_key, *prefix;
 	guint32 i, num, num4;
 	GString *searches;
@@ -1326,6 +1392,7 @@ write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	const struct in6_addr *ip;
 	GString *ip_str1, *ip_str2, *ip_ptr;
 	char *route6_path;
+#endif
 
 	s_ip6 = (NMSettingIP6Config *) nm_connection_get_setting (connection, NM_TYPE_SETTING_IP6_CONFIG);
 	if (!s_ip6) {
@@ -1337,8 +1404,9 @@ write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	value = nm_setting_ip6_config_get_method (s_ip6);
 	g_assert (value);
 	if (!strcmp (value, NM_SETTING_IP6_CONFIG_METHOD_IGNORE)) {
-		svSetValue (ifcfg, "IPV6INIT", "no", FALSE);
+		//svSetValue (ifcfg, "IPV6INIT", "no", FALSE);
 		return TRUE;
+#if 0
 	} else if (!strcmp (value, NM_SETTING_IP6_CONFIG_METHOD_AUTO)) {
 		svSetValue (ifcfg, "IPV6INIT", "yes", FALSE);
 		svSetValue (ifcfg, "IPV6_AUTOCONF", "yes", FALSE);
@@ -1351,8 +1419,11 @@ write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	} else if (!strcmp (value, NM_SETTING_IP6_CONFIG_METHOD_SHARED)) {
 		svSetValue (ifcfg, "IPV6INIT", "yes", FALSE);
 		/* TODO */
+#endif
 	}
+	return TRUE;
 
+#if 0
 	if (!strcmp (value, NM_SETTING_IP6_CONFIG_METHOD_MANUAL)) {
 		/* Write out IP addresses */
 		num = nm_setting_ip6_config_get_num_addresses (s_ip6);
@@ -1457,6 +1528,7 @@ write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 
 error:
 	return FALSE;
+#endif
 }
 
 static char *
@@ -1566,9 +1638,6 @@ write_connection (NMConnection *connection,
 			goto out;
 	}
 
-	if (!ifcfg_mdv_wpa_network_save(wpan, "/etc/wpa_supplicant.conf", error))
-		goto out;
-
 	if (!write_ip4_setting (connection, ifcfg, error))
 		goto out;
 
@@ -1585,6 +1654,11 @@ write_connection (NMConnection *connection,
 		             "Can't write connection '%s'", ifcfg->fileName);
 		goto out;
 	}
+	if (wpan)
+		if (!ifcfg_mdv_wpa_network_save(wpan, "/etc/wpa_supplicant.conf", error)) {
+		goto out;
+		}
+
 
 	/* Only return the filename if this was a newly written ifcfg */
 	if (out_filename && !filename)
