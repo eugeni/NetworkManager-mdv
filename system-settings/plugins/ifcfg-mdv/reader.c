@@ -341,6 +341,8 @@ error:
 	return NULL;
 }
 
+#if 0
+/* no iSCSI on Mandriva */
 static void
 iscsiadm_child_setup (gpointer user_data G_GNUC_UNUSED)
 {
@@ -586,6 +588,7 @@ done:
 	g_free (err);
 	return success;
 }
+#endif
 
 static gboolean
 read_ip4_address (shvarFile *ifcfg,
@@ -620,6 +623,8 @@ read_ip4_address (shvarFile *ifcfg,
 	return success;
 }
 
+#if 0
+No IPv6 on Mandriva
 static gboolean
 parse_ip6_address (const char *value,
                   struct in6_addr *out_addr,
@@ -644,6 +649,7 @@ parse_ip6_address (const char *value,
 	}
 	return success;
 }
+#endif
 
 static NMIP4Address *
 read_full_ip4_address (shvarFile *ifcfg,
@@ -661,6 +667,10 @@ read_full_ip4_address (shvarFile *ifcfg,
 	g_return_val_if_fail (which > 0, NULL);
 	g_return_val_if_fail (ifcfg != NULL, NULL);
 	g_return_val_if_fail (network_file != NULL, NULL);
+
+	/* Mandriva does not seem to use more than one address */
+	if (which != 1)
+		return NULL;
 
 	addr = nm_ip4_address_new ();
 	if (which == 1) {
@@ -705,28 +715,29 @@ read_full_ip4_address (shvarFile *ifcfg,
 		}
 	}
 
-	/* Prefix */
-	value = svGetValue (ifcfg, prefix_tag, FALSE);
-	if (value) {
-		long int prefix;
+	/* NETMASK */
+	if (!read_ip4_address (ifcfg, netmask_tag, &tmp, error))
+		goto error;
+	nm_ip4_address_set_prefix (addr, nm_utils_ip4_netmask_to_prefix (tmp));
 
-		errno = 0;
-		prefix = strtol (value, NULL, 10);
-		if (errno || prefix <= 0 || prefix > 32) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
-			             "Invalid IP4 prefix '%s'", value);
-			g_free (value);
-			goto error;
-		}
-		nm_ip4_address_set_prefix (addr, (guint32) prefix);
-		g_free (value);
-	}
 
-	/* Fall back to NETMASK if no PREFIX was specified */
+	/* Fall back to PERFIX if no NETMASK was specified */
 	if (!nm_ip4_address_get_prefix (addr)) {
-		if (!read_ip4_address (ifcfg, netmask_tag, &tmp, error))
-			goto error;
-		nm_ip4_address_set_prefix (addr, nm_utils_ip4_netmask_to_prefix (tmp));
+		value = svGetValue (ifcfg, prefix_tag, FALSE);
+		if (value) {
+			long int prefix;
+
+			errno = 0;
+			prefix = strtol (value, NULL, 10);
+			if (errno || prefix <= 0 || prefix > 32) {
+				g_set_error (error, ifcfg_plugin_error_quark (), 0,
+					     "Invalid IP4 prefix '%s'", value);
+				g_free (value);
+				goto error;
+			}
+			nm_ip4_address_set_prefix (addr, (guint32) prefix);
+			g_free (value);
+		}
 	}
 
 	/* Try to autodetermine the prefix for the address' class */
@@ -772,6 +783,8 @@ error:
 	return addr;
 }
 
+#if 0
+/* No routes on Mandriva */
 static NMIP4Route *
 read_one_ip4_route (shvarFile *ifcfg,
                     const char *network_file,
@@ -1020,7 +1033,10 @@ error:
 
 	return success;
 }
+#endif
 
+#if 0
+No IPv6 on Mandriva
 static NMIP6Address *
 parse_full_ip6_address (const char *addr_str, GError **error)
 {
@@ -1241,6 +1257,7 @@ error:
 
 	return success;
 }
+#endif
 
 
 static NMSetting *
@@ -1251,11 +1268,11 @@ make_ip4_setting (shvarFile *ifcfg,
 {
 	NMSettingIP4Config *s_ip4 = NULL;
 	char *value = NULL;
-	char *route_path = NULL;
+	// char *route_path = NULL;
 	char *method = NM_SETTING_IP4_CONFIG_METHOD_MANUAL;
 	guint32 i;
 	shvarFile *network_ifcfg;
-	shvarFile *route_ifcfg;
+	// shvarFile *route_ifcfg;
 	gboolean never_default = FALSE, tmp_success;
 
 	s_ip4 = (NMSettingIP4Config *) nm_setting_ip4_config_new ();
@@ -1265,16 +1282,19 @@ make_ip4_setting (shvarFile *ifcfg,
 		return NULL;
 	}
 
+#if 0
+	/* Mandriva sets DEFROUTE for PPP only */
 	/* First check if DEFROUTE is set for this device; DEFROUTE has the
 	 * opposite meaning from never-default. The default if DEFROUTE is not
 	 * specified is DEFROUTE=yes which means that this connection can be used
 	 * as a default route
 	 */
 	never_default = !svTrueValue (ifcfg, "DEFROUTE", TRUE);
+#endif
 
 	/* Then check if GATEWAYDEV; it's global and overrides DEFROUTE */
-	network_ifcfg = svNewFile (network_file);
-	if (network_ifcfg) {
+	 network_ifcfg = svNewFile (network_file);
+	 if (network_ifcfg) {
 		char *gatewaydev;
 
 		/* Get the connection ifcfg device name and the global gateway device */
@@ -1289,14 +1309,16 @@ make_ip4_setting (shvarFile *ifcfg,
 
 		g_free (gatewaydev);
 		g_free (value);
-		svCloseFile (network_ifcfg);
+		// svCloseFile (network_ifcfg);
 	}
 
 	value = svGetValue (ifcfg, "BOOTPROTO", FALSE);
 	if (value) {
-		if (!g_ascii_strcasecmp (value, "bootp") || !g_ascii_strcasecmp (value, "dhcp"))
+		if (!g_ascii_strcasecmp (value, "bootp") || !g_ascii_strcasecmp (value, "dhcp")) {
 			method = NM_SETTING_IP4_CONFIG_METHOD_AUTO;
-		else if (!g_ascii_strcasecmp (value, "ibft")) {
+#if 0
+		/* Is not used by Mandriva */
+		} else if (!g_ascii_strcasecmp (value, "ibft")) {
 			/* iSCSI Boot Firmware Table: need to read values from the iSCSI 
 			 * firmware for this device and create the IP4 setting using those.
 			 */
@@ -1318,9 +1340,11 @@ make_ip4_setting (shvarFile *ifcfg,
 			              NM_SETTING_IP4_CONFIG_NEVER_DEFAULT, never_default,
 			              NULL);
 			return NM_SETTING (s_ip4);
+#endif
 		} else if (!g_ascii_strcasecmp (value, "none") || !g_ascii_strcasecmp (value, "static")) {
 			/* Static IP */
 		} else if (strlen (value)) {
+			/* FIXME actually it is static on Mandriva */
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
 			             "Unknown BOOTPROTO '%s'", value);
 			g_free (value);
@@ -1337,6 +1361,10 @@ make_ip4_setting (shvarFile *ifcfg,
 		 * HWADDR=11:22:33:44:55:66
 		 *
 		 */
+		/* FIXME
+		 * This is not strictly speaking true on Mandriva. Interface
+		 * will be up (ip link up) and zeroconf address will be set
+		 * but no DHCP started */
 		tmp_ip4 = svGetValue (ifcfg, "IPADDR", FALSE);
 		tmp_prefix = svGetValue (ifcfg, "PREFIX", FALSE);
 		tmp_netmask = svGetValue (ifcfg, "NETMASK", FALSE);
@@ -1350,7 +1378,8 @@ make_ip4_setting (shvarFile *ifcfg,
 	g_object_set (s_ip4,
 	              NM_SETTING_IP4_CONFIG_METHOD, method,
 	              NM_SETTING_IP4_CONFIG_IGNORE_AUTO_DNS, !svTrueValue (ifcfg, "PEERDNS", TRUE),
-	              NM_SETTING_IP4_CONFIG_IGNORE_AUTO_ROUTES, !svTrueValue (ifcfg, "PEERROUTES", TRUE),
+		      // Not exists on Mandriva
+	              // NM_SETTING_IP4_CONFIG_IGNORE_AUTO_ROUTES, !svTrueValue (ifcfg, "PEERROUTES", TRUE),
 	              NM_SETTING_IP4_CONFIG_NEVER_DEFAULT, never_default,
 	              NULL);
 
@@ -1375,10 +1404,13 @@ make_ip4_setting (shvarFile *ifcfg,
 			g_object_set (s_ip4, NM_SETTING_IP4_CONFIG_DHCP_HOSTNAME, value, NULL);
 		g_free (value);
 
+#if 0
+		/* Does not seem to be used on Mandriva */
 		value = svGetValue (ifcfg, "DHCP_CLIENT_ID", FALSE);
 		if (value && strlen (value))
 			g_object_set (s_ip4, NM_SETTING_IP4_CONFIG_DHCP_CLIENT_ID, value, NULL);
 		g_free (value);
+#endif
 	}
 
 	/* DNS servers
@@ -1387,11 +1419,13 @@ make_ip4_setting (shvarFile *ifcfg,
 	for (i = 1, tmp_success = TRUE; i <= 10 && tmp_success; i++) {
 		char *tag;
 		guint32 dns;
-		struct in6_addr ip6_dns;
-		GError *tmp_err = NULL;
+		// struct in6_addr ip6_dns;
+		// GError *tmp_err = NULL;
 
 		tag = g_strdup_printf ("DNS%u", i);
 		tmp_success = read_ip4_address (ifcfg, tag, &dns, error);
+#if 0
+		/* No IPv6 on Mandriva */
 		if (!tmp_success) {
 			/* if it's IPv6, don't exit */
 			dns = 0;
@@ -1407,6 +1441,7 @@ make_ip4_setting (shvarFile *ifcfg,
 			}
 			g_clear_error (error);
 		}
+#endif
 
 		if (dns && !nm_setting_ip4_config_add_dns (s_ip4, dns))
 			PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: duplicate DNS server %s", tag);
@@ -1432,6 +1467,8 @@ make_ip4_setting (shvarFile *ifcfg,
 		g_free (value);
 	}
 
+#if 0
+	/* Some support is present on Mandriva but no GUI to configure */
 	/* Static routes  - route-<name> file */
 	route_path = utils_get_route_path (ifcfg->fileName);
 	if (!route_path) {
@@ -1468,7 +1505,10 @@ make_ip4_setting (shvarFile *ifcfg,
 		if (error && *error)
 			goto error;
 	}
+#endif
 
+#if 0
+	/* Does not seem to be used anyhwere on Mandriva */
 	/* Legacy value NM used for a while but is incorrect (rh #459370) */
 	if (!nm_setting_ip4_config_get_num_dns_searches (s_ip4)) {
 		value = svGetValue (ifcfg, "SEARCH", FALSE);
@@ -1489,6 +1529,7 @@ make_ip4_setting (shvarFile *ifcfg,
 			g_free (value);
 		}
 	}
+#endif
 
 	return NM_SETTING (s_ip4);
 
@@ -1497,6 +1538,8 @@ error:
 	return NULL;
 }
 
+#if 0
+No IPv6 on Mandriva
 static NMSetting *
 make_ip6_setting (shvarFile *ifcfg,
                   const char *network_file,
@@ -1692,6 +1735,7 @@ error:
 	g_object_unref (s_ip6);
 	return NULL;
 }
+#endif
 
 static gboolean
 add_one_wep_key (shvarFile *ifcfg,
@@ -3269,8 +3313,8 @@ connection_from_file (const char *filename,
 {
 	NMConnection *connection = NULL;
 	shvarFile *parsed;
-	char *type, *nmc = NULL, *bootproto;
-	NMSetting *s_ip4, *s_ip6;
+	char *type, *nmc = NULL;
+	NMSetting *s_ip4;
 	const char *ifcfg_name = NULL;
 	gboolean nm_controlled = FALSE, onboot;
 	char *device;
@@ -3396,6 +3440,8 @@ connection_from_file (const char *filename,
 		nm_connection_add_setting (connection, s_ip4);
 	}
 
+#if 0
+	/* No IPv6 on Mandriva */
 	s_ip6 = make_ip6_setting (parsed, network_file, iscsiadm_path, error);
 	if (*error) {
 		g_object_unref (connection);
@@ -3403,7 +3449,10 @@ connection_from_file (const char *filename,
 		goto done;
 	} else if (s_ip6)
 		nm_connection_add_setting (connection, s_ip6);
+#endif
 
+#if 0
+	/* no iSCSI on Mandriva */
 	/* iSCSI / ibft connections are read-only since their settings are
 	 * stored in NVRAM and can only be changed in BIOS.
 	 */
@@ -3418,6 +3467,7 @@ connection_from_file (const char *filename,
 
 		g_object_set (G_OBJECT (s_con), NM_SETTING_CONNECTION_READ_ONLY, TRUE, NULL);
 	}
+#endif
 
 	if (!nm_connection_verify (connection, error)) {
 		g_object_unref (connection);
