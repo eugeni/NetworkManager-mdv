@@ -38,5 +38,6 @@ NMConnection *connection_from_file (const char *filename,
                                     gboolean *ignore_error);
 
 const char *reader_get_prefix (void);
+GByteArray *ifcfg_mdv_parse_ssid(char *, GError **);
 
 #endif  /* __READER_H__ */

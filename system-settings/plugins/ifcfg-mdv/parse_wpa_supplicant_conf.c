@@ -24,6 +24,37 @@ struct _WPANetwork {
 	GHashTable	*keyvals;	/* content */
 };
 
+static gchar *
+parse_wpa_string(const gchar *value, gsize *len)
+{
+	gchar *str;
+	gsize l;
+
+	if (*value == '"') {
+		const gchar *pos;
+		value++;
+		pos = strrchr(value, '"');
+		if (pos == NULL || pos[1] != '\0')
+			return NULL;
+		l = pos - value;
+		str = g_malloc(l + 1);
+		if (str == NULL)
+			return NULL;
+		memcpy(str, value, l);
+		str[l] = '\0';
+	} else {
+		l = strlen(value);
+		str = utils_hexstr2bin(value, l);
+		if (str == NULL)
+			return NULL;
+	}
+
+	if (len)
+		*len = l;
+	return str;
+}
+
+
 WPAConfig *
 ifcfg_mdv_wpa_config_new(gchar *file)
 {
@@ -218,7 +249,7 @@ ifcfg_mdv_wpa_network_set_val(WPANetwork *wpan, const gchar *key, const gchar *v
 gchar *
 ifcfg_mdv_wpa_network_get_str(WPANetwork *wpan, const gchar *key)
 {
-	gchar *value, *str = NULL;
+	gchar *value;
 
 	g_return_val_if_fail(wpan != NULL, NULL);
 	g_return_val_if_fail(key != NULL, NULL);
@@ -227,27 +258,55 @@ ifcfg_mdv_wpa_network_get_str(WPANetwork *wpan, const gchar *key)
 	if (!value)
 		return NULL;
 
-	if (*value == '"') {
-		const char *pos;
-		size_t len;
-		value++;
-		pos = strrchr(value, '"');
-		if (pos == NULL || pos[1] != '\0')
-			return NULL;
-		len = pos - value;
-		str = g_malloc(len + 1);
-		if (str == NULL)
-			return NULL;
-		memcpy(str, value, len);
-		str[len] = '\0';
-	} else {
-		size_t hlen = strlen(value);
-		str = utils_hexstr2bin(value, hlen);
-		if (str == NULL)
-			return NULL;
-	}
+	return parse_wpa_string(value, NULL);
+}
 
-	return str;
+GByteArray *
+ifcfg_mdv_wpa_network_get_ssid(WPANetwork *wpan)
+{
+	gchar *value, *ssid;
+	gsize len;
+	GByteArray *a;
+
+	g_return_val_if_fail(wpan != NULL, NULL);
+
+	value = ifcfg_mdv_wpa_network_get_val(wpan, "ssid");
+	if (!value)
+		return NULL;
+
+	ssid = parse_wpa_string(value, &len);
+	if (!ssid)
+		return NULL;
+	if (len == 0 || len > 32)
+		goto error;
+
+	a = g_byte_array_sized_new (len);
+	if (!a)
+		goto error;
+
+	g_byte_array_append (a, (const guint8 *) ssid, len);
+	g_free(ssid);
+	return a;
+
+error:
+	g_free(ssid);
+	return NULL;
+}
+
+void
+ifcfg_mdv_wpa_network_set_ssid(WPANetwork *wpan, const GByteArray *val)
+{
+	gchar buf[33];
+
+	g_return_if_fail(wpan != NULL);
+	g_return_if_fail(wpan != NULL);
+
+	if (val->len == 0 || val->len > 32)
+		return;
+
+	memcpy(buf, val->data, val->len);
+	buf[val->len] = '\0';
+	ifcfg_mdv_wpa_network_set_str(wpan, "ssid", buf);
 }
 
 void

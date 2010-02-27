@@ -206,19 +206,17 @@ do_delete (NMSettingsConnectionInterface *connection,
 	const GByteArray *ssid = NULL;
 
 	s_wireless = (NMSettingWireless *)nm_connection_get_setting(NM_CONNECTION(connection), NM_TYPE_SETTING_WIRELESS);
-	if (s_wireless) {
-		puts("non-nul");
+	if (s_wireless)
 		ssid = nm_setting_wireless_get_ssid(s_wireless);
-	}
+
+	/* Delete network block from wpa_supplicant.conf */
 	if (ssid) {
 		wpan = ifcfg_mdv_wpa_network_new(NULL);
 		if (wpan) {
-			gchar *tmp = utils_ssid4ifcfg(ssid);
-			ifcfg_mdv_wpa_network_set_val(wpan, "ssid", tmp);
+			ifcfg_mdv_wpa_network_set_ssid(wpan, ssid);
 			ifcfg_mdv_wpa_network_set_val(wpan, "__DELETE__", "yes");
 			ifcfg_mdv_wpa_network_save(wpan, "/etc/wpa_supplicant.conf", NULL);
 			ifcfg_mdv_wpa_network_free(wpan);
-			g_free(tmp);
 		}
 	}
 
