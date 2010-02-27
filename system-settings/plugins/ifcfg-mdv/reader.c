@@ -263,66 +263,24 @@ read_mac_address (shvarFile *ifcfg, GByteArray **array, GError **error)
 	return TRUE;
 }
 
-/* This largely duplicates str_from_wpa, but ifcfg and wpa_supplicant
- * use different quoting rules */
-static GByteArray *
-parse_ssid(char *value, gboolean shell, GError **error)
+/* Mandriva does not seem to ever hex-encode SSID in ifcfg. So do not bother
+ * as well - just get what we have. This highly simplifies the logic */
+/* FIXME this currently fails for '\0' which is not accepted as input either */
+GByteArray *
+ifcfg_mdv_parse_ssid(char *value, GError **error)
 {
-	gsize ssid_len = 0, value_len = strlen (value);
-	char *p = value, *tmp;
-	char buf[33];
+	gsize ssid_len;
+	gchar *ssid = NULL;
 	GByteArray *a;
 
-	value = g_strdup(value);
-	if (!value)
-		return NULL;
-
-	ssid_len = value_len;
-	if (   (value_len >= 2)
-	    && ((value[0] == '"') || (shell && value[0] == '\''))
-	    && (value[value_len - 1] == value[0])) {
-		/* if wpa_supplicant: just strip the quotes
-		 * if ifcfg: unescape */
-		if (shell) {
-			svUnescape (value);
-			p = value;
-		} else {
-			value[value_len - 1] = '\0';
-			p = value + 1;
-		}
-		ssid_len = strlen (p);
-	} else if ((value_len > 2) && (!shell || strncmp (value, "0x", 2) == 0)) {
-		/* Hex representation */
-		if (value_len % 2) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
-				     "Invalid SSID '%s' size (looks like hex but length not multiple of 2)",
-				     value);
-			goto error;
-		}
-
-		if (shell) {
-			value += 2;
-			value_len -= 2;
-		}
-
-		p = value;
-		while (*p) {
-			if (!isxdigit (*p)) {
-				g_set_error (error, ifcfg_plugin_error_quark (), 0,
-					     "Invalid SSID '%s' character (looks like hex SSID but '%c' isn't a hex digit)",
-					     value, *p);
-				goto error;
-			}
-			p++;
-		}
-
-		tmp = utils_hexstr2bin (value, value_len);
-		ssid_len  = (value_len) / 2;
-		memcpy (buf, tmp, ssid_len);
-		g_free(tmp);
-		p = &buf[0];
+	ssid = g_strdup(value);
+	if (!ssid) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		     "Cannot duplicate SSID");
+		goto error;
 	}
-
+	svUnescape (ssid);
+	ssid_len = strlen (ssid);
 	if (ssid_len > 32 || ssid_len == 0) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 			     "Invalid SSID '%s' (size %zu not between 1 and 32 inclusive)",
@@ -331,13 +289,19 @@ parse_ssid(char *value, gboolean shell, GError **error)
 	}
 
 	a = g_byte_array_sized_new (ssid_len);
-	if (a)
-		g_byte_array_append (a, (const guint8 *) p, ssid_len);
-	g_free(value);
+	if (!a) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			     "Cannot allocate SSID");
+		goto error;
+	}
+
+	g_byte_array_append (a, (const guint8 *) ssid, ssid_len);
+	g_free(ssid);
+
 	return a;
 
 error:
-	g_free(value);
+	g_free(ssid);
 	return NULL;
 }
 
@@ -2835,17 +2799,14 @@ make_wireless_security_setting (shvarFile *ifcfg,
 
 			ifcfg_mdv_wpa_config_rewind(wpac);
 			while (!found && (wpan = ifcfg_mdv_wpa_config_next(wpac)) != NULL) {
-				GByteArray *b_ssid = NULL;
-				gchar *w_ssid = ifcfg_mdv_wpa_network_get_val(wpan, "ssid");
-
-				if (w_ssid)
-					b_ssid = parse_ssid(w_ssid, FALSE, error);
+				GByteArray *b_ssid = ifcfg_mdv_wpa_network_get_ssid(wpan);
 
 				if (b_ssid) {
-					if (b_ssid->len == ssid->len && memcmp(b_ssid->data, ssid->data, ssid->len) == 0)
+					if (b_ssid->len == ssid->len && !memcmp(b_ssid->data, ssid->data, ssid->len))
 						found = TRUE;
 					g_byte_array_unref(b_ssid);
-				}
+				} else
+					PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: no SSID in wpa_supplicant.conf network block");
 			}
 		} else {
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
@@ -2926,7 +2887,7 @@ make_wireless_setting (shvarFile *ifcfg,
 
 	value = svGetValue (ifcfg, "WIRELESS_ESSID", TRUE);
 	if (value) {
-		array = parse_ssid (value, TRUE, error);
+		array = ifcfg_mdv_parse_ssid (value, error);
 		g_free (value);
 
 		if (array) {

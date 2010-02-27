@@ -18,6 +18,8 @@ gpointer ifcfg_mdv_wpa_network_get_val(WPANetwork *, const gchar *);
 void ifcfg_mdv_wpa_network_set_val(WPANetwork *, const gchar *, const gchar *);
 gchar *ifcfg_mdv_wpa_network_get_str(WPANetwork *, const gchar *);
 void ifcfg_mdv_wpa_network_set_str(WPANetwork *, const gchar *, const gchar *);
+GByteArray *ifcfg_mdv_wpa_network_get_ssid(WPANetwork *);
+void ifcfg_mdv_wpa_network_set_ssid(WPANetwork *, const GByteArray *);
 void ifcfg_mdv_wpa_network_unset(WPANetwork *, const gchar *);
 
 gboolean ifcfg_mdv_wpa_network_save(WPANetwork *, gchar *, GError **);

@@ -773,12 +773,13 @@ write_wireless_setting (NMConnection *connection,
                         GError **error)
 {
 	NMSettingWireless *s_wireless;
-	char *tmp;
+	char *tmp = NULL;
 	const GByteArray *ssid, *bssid;
+	GByteArray *old_ssid = NULL;
 	const char *mode;
-	guint32 mtu, chan;
+	guint32 mtu, chan, i;
 	gboolean adhoc = FALSE;
-	gchar *p_ssid, *old_ssid = NULL;
+	gchar buf[33];
 
 	s_wireless = (NMSettingWireless *) nm_connection_get_setting (connection, NM_TYPE_SETTING_WIRELESS);
 	if (!s_wireless) {
@@ -820,39 +821,56 @@ write_wireless_setting (NMConnection *connection,
 		return FALSE;
 	}
 
-	/* If the SSID contains any non-printable characters, we need to use the
-	 * hex notation of the SSID instead.
-	 */
-	p_ssid = utils_ssid4ifcfg(ssid);
-	if (!p_ssid)
-		return FALSE;
+	/*
+	 * Mandriva is using SSID as part of file name; check for characters
+	 * that cannot included */
+	for (i = 0; i < ssid->len; i++)
+		if (G_DIR_SEPARATOR == ssid->data[i] || ssid->data[i] == '\0') {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				     "Invalid SSID in '%s' setting", NM_SETTING_WIRELESS_SETTING_NAME);
+			return FALSE;
+		}
 
 	/*
 	 * If SID changed we have to remove it from wpa_supplicant.conf
 	 */
-	old_ssid = svGetValue(ifcfg, "WIRELESS_ESSID", TRUE);
-	if (old_ssid && g_strcmp0(old_ssid, p_ssid)) {
+	tmp = svGetValue(ifcfg, "WIRELESS_ESSID", TRUE);
+	if (!tmp) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		     "Missing WIRELESS_SSID in '%s'", ifcfg->fileName);
+		return FALSE;
+	}
+	old_ssid = ifcfg_mdv_parse_ssid(tmp, error);
+	if (!old_ssid)
+		goto free;
+
+	if (ssid->len != old_ssid->len || !memcmp(ssid->data, old_ssid->data, ssid->len)) {
 		WPANetwork *del = ifcfg_mdv_wpa_network_new(NULL);
 
 		if (!del) {
-			g_free(p_ssid);
-			return FALSE;
+			PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: could not allocate WPANetwork to remove SSID '%s'",
+		             tmp);
+			goto free;
 		}
 
-		ifcfg_mdv_wpa_network_set_val(del, "ssid", old_ssid);
+		ifcfg_mdv_wpa_network_set_ssid(del, old_ssid);
 		ifcfg_mdv_wpa_network_set_val(del, "__DELETE__", "yes");
 		ifcfg_mdv_wpa_network_save(del, "/etc/wpa_supplicant.conf", error);
 		ifcfg_mdv_wpa_network_free(del);
 		if (*error) {
-			g_free(p_ssid);
-			return FALSE;
+			goto free;
 		}
 	}
-	g_free(old_ssid);
+	g_free(tmp);
+	g_byte_array_free(old_ssid, TRUE);
 
-	svSetValue (ifcfg, "WIRELESS_ESSID", p_ssid, TRUE);
-	ifcfg_mdv_wpa_network_set_val(wpan, "ssid", p_ssid);
-	g_free(p_ssid);
+	/* we just verified that it does not contain '\0' and fits in buf */
+	memcpy(buf, ssid->data, ssid->len);
+	buf[ssid->len] = '\0';
+	tmp = svEscape(buf);
+	svSetValue (ifcfg, "WIRELESS_ESSID", tmp, TRUE);
+	g_free(tmp);
+	ifcfg_mdv_wpa_network_set_ssid(wpan, ssid);
 
 	mode = nm_setting_wireless_get_mode (s_wireless);
 	if (!mode || !strcmp (mode, "infrastructure")) {
@@ -895,6 +913,12 @@ write_wireless_setting (NMConnection *connection,
 	// svSetValue (ifcfg, "TYPE", TYPE_WIRELESS, FALSE);
 
 	return TRUE;
+free:
+	g_free(tmp);
+	if (old_ssid)
+		g_byte_array_free(old_ssid, TRUE);
+
+	return FALSE;
 }
 
 static gboolean

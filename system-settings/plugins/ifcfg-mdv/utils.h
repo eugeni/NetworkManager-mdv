@@ -47,7 +47,6 @@ shvarFile *utils_get_route6_ifcfg (const char *parent, gboolean should_create);
 
 gboolean utils_has_route_file_new_syntax (const char *filename);
 
-gchar *utils_ssid4ifcfg(const GByteArray *ssid);
 gchar *utils_wep4ifcfg(const gchar *value);
 
 #endif  /* _UTILS_H_ */

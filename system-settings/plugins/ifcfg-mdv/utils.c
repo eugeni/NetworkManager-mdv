@@ -337,46 +337,6 @@ gone:
 	return ret;
 }
 
-/* If the SSID contains any non-printable characters, we need to use the
- * hex notation of the SSID instead.
- */
-
-gchar *
-utils_ssid4ifcfg(const GByteArray *ssid)
-{
-	int i;
-	gboolean hex_ssid = FALSE;
-	gchar *p_ssid, *buf;
-
-	for (i = 0; i < ssid->len; i++) {
-		if (!isprint (ssid->data[i])) {
-			hex_ssid = TRUE;
-			break;
-		}
-	}
-
-	if (hex_ssid) {
-		GString *str;
-
-		/* Hex SSIDs don't get quoted */
-		str = g_string_sized_new (ssid->len * 2 + 3);
-		g_string_append (str, "0x");
-		for (i = 0; i < ssid->len; i++)
-			g_string_append_printf (str, "%02X", ssid->data[i]);
-		p_ssid = str->str;
-		g_string_free (str, FALSE);
-	} else {
-		/* Printable SSIDs get quoted */
-		buf = g_malloc(ssid->len + 1);
-		memset (buf, 0, ssid->len + 1);
-		memcpy (buf, ssid->data, ssid->len);
-		p_ssid = svEscape (buf);
-		g_free(buf);
-	}
-
-	return p_ssid;
-}
-
 /*
  * ifcfg reader converts ASCII to HEX. This converts key back to ASCII
  * before writing
