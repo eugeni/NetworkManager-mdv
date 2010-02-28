@@ -753,14 +753,17 @@ write_wireless_security_setting (NMConnection *connection,
 
 	/* WPA Passphrase */
 	if (wpa) {
-		g_string_assign(str, nm_setting_wireless_security_get_psk(s_wsec));
-		if (str->len && str->len != 64) {
-			/* Quote the PSK since it's a passphrase */
-			g_string_prepend_c (str, '"');
-			g_string_append_c (str, '"');
-		}
+		const char *psk = nm_setting_wireless_security_get_psk(s_wsec);
+		if (psk) {
+			g_string_assign(str, psk);
+			if (str->len != 64) {
+				/* Quote the PSK since it's a passphrase */
+				g_string_prepend_c (str, '"');
+				g_string_append_c (str, '"');
+			}
 
-		ifcfg_mdv_wpa_network_set_val(wpan, "psk", str->str);
+			ifcfg_mdv_wpa_network_set_val(wpan, "psk", str->str);
+		}
 	}
 	g_string_free (str, TRUE);
 
