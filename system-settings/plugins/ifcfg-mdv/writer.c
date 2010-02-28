@@ -1649,7 +1649,7 @@ write_connection (NMConnection *connection,
 
 	write_connection_setting (s_con, ifcfg);
 
-	if (svWriteFile (ifcfg, 0644)) {
+	if (svWriteFile (ifcfg, 0600)) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 		             "Can't write connection '%s'", ifcfg->fileName);
 		goto out;
