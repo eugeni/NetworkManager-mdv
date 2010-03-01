@@ -12,6 +12,8 @@ libifcfg_mdv_io_la_SOURCES = \
 	writer.c \
 	writer.h \
 	common.h \
+	utils-mdv.c \
+	utils-mdv.h \
 	../ifcfg-rh/shvar.c \
 	../ifcfg-rh/shvar.h \
 	../ifcfg-rh/errors.c \
