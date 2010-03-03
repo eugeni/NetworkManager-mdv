@@ -1443,7 +1443,9 @@ write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		/* TODO */
 #endif
 	}
-	return TRUE;
+	g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		     "IPv6 settings not supported");
+	return FALSE;
 
 #if 0
 	if (!strcmp (value, NM_SETTING_IP6_CONFIG_METHOD_MANUAL)) {
