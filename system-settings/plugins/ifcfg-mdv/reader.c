@@ -56,6 +56,7 @@
 #include "common.h"
 #include "shvar.h"
 #include "utils.h"
+#include "utils-mdv.h"
 
 #include "reader.h"
 #include "parse_wpa_supplicant_conf.h"
@@ -3274,11 +3275,11 @@ connection_from_file (const char *filename,
 {
 	NMConnection *connection = NULL;
 	shvarFile *parsed;
-	char *type, *nmc = NULL;
+	char *type = NULL, *nmc = NULL;
 	NMSetting *s_ip4;
-	const char *ifcfg_name = NULL;
 	gboolean nm_controlled = FALSE, onboot;
-	char *device;
+	char *device = NULL;
+	MdvIfcfgType ifcfg_type;
 
 	g_return_val_if_fail (filename != NULL, NULL);
 	g_return_val_if_fail (unmanaged != NULL, NULL);
@@ -3297,10 +3298,10 @@ connection_from_file (const char *filename,
 	if (!iscsiadm_path)
 		iscsiadm_path = SBINDIR "/iscsiadm";
 
-	ifcfg_name = utils_get_ifcfg_name (filename, TRUE);
-	if (!ifcfg_name) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-		             "Ignoring connection '%s' because it's not an ifcfg file.", filename);
+	ifcfg_type = mdv_get_ifcfg_type(filename);
+	if (ifcfg_type == MdvIfcfgTypeUnknown) {
+		g_set_error(error, ifcfg_plugin_error_quark(), 0,
+			"Cannot determine connection type for %s; ignored", filename);
 		return NULL;
 	}
 
@@ -3308,85 +3309,89 @@ connection_from_file (const char *filename,
 	if (!parsed) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 		             "Couldn't parse file '%s'", filename);
-		return NULL;
-	}
-
-	/* Read the device */
-	device = svGetValue (parsed, "DEVICE", FALSE);
-	if (!device) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-					 "File '%s' had neither TYPE nor DEVICE keys.", filename);
 		goto done;
 	}
 
-	if (!strcmp (device, "lo")) {
-		*ignore_error = TRUE;
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-					 "Ignoring loopback device config.");
-		g_free (device);
-		goto done;
-	}
-
-	type = svGetValue (parsed, "TYPE", FALSE);
-	if (!type) {
-
-		/* If no type, if the device has wireless extensions, it's wifi,
-		 * otherwise it's ethernet.
+	if (ifcfg_type == MdvIfcfgTypeInterface) {
+		/*
+		 * Physical interface, may be umnagaed
 		 */
-		if (!test_type) {
-			/* Test wireless extensions */
-			if (is_wireless_device (device))
-				type = g_strdup (TYPE_WIRELESS);
-			else
-				type = g_strdup (TYPE_ETHERNET);
-		} else {
-			/* For the unit tests, there won't necessarily be any
-			 * adapters of the connection's type in the system so the
-			 * type can't be tested with ioctls.
-			 */
-			type = g_strdup (test_type);
+		device = svGetValue (parsed, "DEVICE", FALSE);
+		if (!device) {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				 "File '%s' does not have DEVICE key", filename);
+			goto done;
 		}
 
+		if (!strcmp (device, "lo")) {
+			*ignore_error = TRUE;
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				 "Ignoring loopback device config");
+			goto done;
+		}
+
+		type = svGetValue (parsed, "TYPE", FALSE);
+		if (!type) {
+
+			/* If no type, if the device has wireless extensions, it's wifi,
+			 * otherwise it's ethernet.
+			 */
+			if (!test_type) {
+				/* Test wireless extensions */
+				if (is_wireless_device (device))
+					type = g_strdup (TYPE_WIRELESS);
+				else
+					type = g_strdup (TYPE_ETHERNET);
+			} else {
+				/* For the unit tests, there won't necessarily be any
+				 * adapters of the connection's type in the system so the
+				 * type can't be tested with ioctls.
+				 */
+				type = g_strdup (test_type);
+			}
+
+		}
+
+		nmc = svGetValue (parsed, "NM_CONTROLLED", FALSE);
+		if (nmc) {
+			char *lower;
+
+			lower = g_ascii_strdown (nmc, -1);
+			g_free (nmc);
+
+			if (!strcmp (lower, "yes") || !strcmp (lower, "y") || !strcmp (lower, "true"))
+				nm_controlled = TRUE;
+			g_free (lower);
+		}
+
+	       /*
+		* FIXME
+		* ONBOOT is used by Mandriva initscripts. For now use different
+		* variable; otherwise both initscripts and NM will try to
+		* bring interface online. Do not try to control interface
+		* if ONBOOT was set to true
+		*/
+	       onboot = svTrueValue (parsed, "ONBOOT", TRUE);
+	       nm_controlled = nm_controlled && !onboot;
+
+		if (!strcasecmp (type, TYPE_ETHERNET))
+			connection = wired_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error);
+		else if (!strcasecmp (type, TYPE_WIRELESS))
+			connection = wireless_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error);
+		else {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				     "Unknown connection type '%s'", type);
+			goto done;
+		}
+
+		if (nm_controlled) {
+			g_free (*unmanaged);
+			*unmanaged = NULL;
+		}
+
+	} else {
+		/* TODO directly jump to wireless WPA */
 	}
-
-	nmc = svGetValue (parsed, "NM_CONTROLLED", FALSE);
-	if (nmc) {
-		char *lower;
-
-		lower = g_ascii_strdown (nmc, -1);
-		g_free (nmc);
-
-		if (!strcmp (lower, "yes") || !strcmp (lower, "y") || !strcmp (lower, "true"))
-			nm_controlled = TRUE;
-		g_free (lower);
-	}
-
-       /*
-        * FIXME
-        * ONBOOT is used by Mandriva initscripts. For now use different
-        * variable; otherwise both initscripts and NM will try to
-        * bring interface online. Do not try to control interface
-        * if ONBOOT was set to true
-        */
-       onboot = svTrueValue (parsed, "ONBOOT", TRUE);
-       nm_controlled = nm_controlled && !onboot;
-
-	if (!strcasecmp (type, TYPE_ETHERNET))
-		connection = wired_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error);
-	else if (!strcasecmp (type, TYPE_WIRELESS))
-		connection = wireless_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error);
-	else {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-		             "Unknown connection type '%s'", type);
-	}
-
-	if (nm_controlled) {
-		g_free (*unmanaged);
-		*unmanaged = NULL;
-	}
-
-	g_free (type);
-	g_free (device);
 
 	/* Don't bother reading the connection fully if it's unmanaged */
 	if (!connection || *unmanaged)
@@ -3440,7 +3445,10 @@ connection_from_file (const char *filename,
 	*route6file = utils_get_route6_path (filename);
 
 done:
-	svCloseFile (parsed);
+	g_free (type);
+	g_free(device);
+	if (parsed)
+		svCloseFile (parsed);
 	return connection;
 }
 
