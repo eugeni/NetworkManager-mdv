@@ -2775,6 +2775,54 @@ error:
 #endif
 
 static NMSetting *
+make_wpa_supplicant_setting (shvarFile *ifcfg,
+                                const char *file,
+                                const GByteArray *ssid,
+                                gboolean adhoc,
+                                NMSetting8021x **s_8021x,
+                                GError **error)
+{
+	NMSetting *wsec = NULL; /* unencrypted by default */
+	WPAConfig *wpac = NULL;
+	WPANetwork *wpan = NULL;
+
+	/*
+	 * Mandriva saves WPA parameters directly in wpa_supplicant.conf
+	 */
+	wpac = ifcfg_mdv_wpa_config_new("/etc/wpa_supplicant.conf");
+	if (wpac && ifcfg_mdv_wpa_config_parse(wpac)) {
+		gboolean found = FALSE;
+
+		ifcfg_mdv_wpa_config_rewind(wpac);
+		while (!found && (wpan = ifcfg_mdv_wpa_config_next(wpac)) != NULL) {
+			GByteArray *b_ssid = ifcfg_mdv_wpa_network_get_ssid(wpan);
+
+			if (b_ssid) {
+				if (b_ssid->len == ssid->len && !memcmp(b_ssid->data, ssid->data, ssid->len))
+					found = TRUE;
+				g_byte_array_unref(b_ssid);
+			} else
+				PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: no SSID in wpa_supplicant.conf network block");
+		}
+	} else {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			     "WIRELESS_WPA_DRIVER set but /etc/wpa_supplicant.conf missing");
+		goto done;
+	}
+
+	if (!wpan) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			     "WIRELESS_WPA_DRIVER set but SSID missing in /etc/wpa_supplicant.conf");
+		goto done;
+	}
+
+	wsec = make_wpa_setting (ifcfg, wpan, file, ssid, adhoc, s_8021x, error);
+done:
+	ifcfg_mdv_wpa_config_free (wpac);
+	return wsec;
+}
+
+static NMSetting *
 make_wireless_security_setting (shvarFile *ifcfg,
                                 const char *file,
                                 const GByteArray *ssid,
@@ -2784,8 +2832,6 @@ make_wireless_security_setting (shvarFile *ifcfg,
 {
 	NMSetting *wsec = NULL; /* unencrypted by default */
 	char *driver;
-	WPAConfig *wpac = NULL;
-	WPANetwork *wpan = NULL;
 
 	/*
 	 * Mandriva saves WPA parameters directly in wpa_supplicant.conf
@@ -2794,35 +2840,9 @@ make_wireless_security_setting (shvarFile *ifcfg,
 	if (driver) {
 		g_free (driver);
 
-		wpac = ifcfg_mdv_wpa_config_new("/etc/wpa_supplicant.conf");
-		if (wpac && ifcfg_mdv_wpa_config_parse(wpac)) {
-			gboolean found = FALSE;
+		wsec = make_wpa_supplicant_setting(ifcfg, file, ssid, adhoc, s_8021x, error);
+	} else {
 
-			ifcfg_mdv_wpa_config_rewind(wpac);
-			while (!found && (wpan = ifcfg_mdv_wpa_config_next(wpac)) != NULL) {
-				GByteArray *b_ssid = ifcfg_mdv_wpa_network_get_ssid(wpan);
-
-				if (b_ssid) {
-					if (b_ssid->len == ssid->len && !memcmp(b_ssid->data, ssid->data, ssid->len))
-						found = TRUE;
-					g_byte_array_unref(b_ssid);
-				} else
-					PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: no SSID in wpa_supplicant.conf network block");
-			}
-		} else {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
-				     "WIRELESS_WPA_DRIVER set but /etc/wpa_supplicant.conf missing");
-			goto done;
-		}
-
-		if (!wpan) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
-				     "WIRELESS_WPA_DRIVER set but SSID missing in /etc/wpa_supplicant.conf");
-			goto done;
-		}
-	}
-
-	if (wpan) {
 #if 0
 		// LEAP does not seem to be supported by Mandriva
 		if (!adhoc) {
@@ -2833,16 +2853,9 @@ make_wireless_security_setting (shvarFile *ifcfg,
 				goto error;
 		}
 #endif
-
-		wsec = make_wpa_setting (ifcfg, wpan, file, ssid, adhoc, s_8021x, error);
-		if (wsec || *error)
-			goto done;
+		wsec = make_wep_setting (ifcfg, file, error);
 	}
 
-	wsec = make_wep_setting (ifcfg, file, error);
-
-done:
-	ifcfg_mdv_wpa_config_free (wpac);
 	return wsec;
 }
 
