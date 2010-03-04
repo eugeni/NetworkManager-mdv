@@ -123,7 +123,7 @@ make_connection_setting (const char *file,
 	char *new_id = NULL, *uuid = NULL, *value;
 	// char *ifcfg_id;
 
-	ifcfg_name = utils_get_ifcfg_name (file, TRUE);
+	ifcfg_name = mdv_get_ifcfg_name (file);
 	if (!ifcfg_name)
 		return NULL;
 
@@ -2862,6 +2862,7 @@ make_wireless_security_setting (shvarFile *ifcfg,
 static NMSetting *
 make_wireless_setting (shvarFile *ifcfg,
                        gboolean nm_controlled,
+		       gboolean roaming,
                        char **unmanaged,
                        char *device,
                        GError **error)
@@ -2872,31 +2873,33 @@ make_wireless_setting (shvarFile *ifcfg,
 
 	s_wireless = NM_SETTING_WIRELESS (nm_setting_wireless_new ());
 
-	if (read_mac_address (ifcfg, &array, error)) {
-		/* if we don't have a HWADDR saved in ifcfg file, try to discover it manually */
-		if (!array) {
-			discover_mac_address(device, &array, error);
-		}
-		if (array) {
-			g_object_set (s_wireless, NM_SETTING_WIRELESS_MAC_ADDRESS, array, NULL);
-
-			/* A connection can only be unmanaged if we know the MAC address */
-			if (!nm_controlled) {
-				*unmanaged = g_strdup_printf ("mac:%02x:%02x:%02x:%02x:%02x:%02x",
-				                              array->data[0], array->data[1], array->data[2],
-				                              array->data[3], array->data[4], array->data[5]);
+	if (!roaming) {
+		if (read_mac_address (ifcfg, &array, error)) {
+			/* if we don't have a HWADDR saved in ifcfg file, try to discover it manually */
+			if (!array) {
+				discover_mac_address(device, &array, error);
 			}
+			if (array) {
+				g_object_set (s_wireless, NM_SETTING_WIRELESS_MAC_ADDRESS, array, NULL);
 
-			g_byte_array_free (array, TRUE);
-		} else if (!nm_controlled) {
-			/* If NM_CONTROLLED=no but there wasn't a MAC address, notify
-			 * the user that the device cannot be unmanaged.
-			 */
-			PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: NM_CONTROLLED was false but HWADDR was missing; device will be managed");
+				/* A connection can only be unmanaged if we know the MAC address */
+				if (!nm_controlled) {
+					*unmanaged = g_strdup_printf ("mac:%02x:%02x:%02x:%02x:%02x:%02x",
+								      array->data[0], array->data[1], array->data[2],
+								      array->data[3], array->data[4], array->data[5]);
+				}
+
+				g_byte_array_free (array, TRUE);
+			} else if (!nm_controlled) {
+				/* If NM_CONTROLLED=no but there wasn't a MAC address, notify
+				 * the user that the device cannot be unmanaged.
+				 */
+				PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: NM_CONTROLLED was false but HWADDR was missing; device will be managed");
+			}
+		} else {
+			g_object_unref (s_wireless);
+			return NULL;
 		}
-	} else {
-		g_object_unref (s_wireless);
-		return NULL;
 	}
 
 	value = svGetValue (ifcfg, "WIRELESS_ESSID", TRUE);
@@ -3007,6 +3010,107 @@ error:
 	return NULL;
 }
 
+/*
+ * roaming_connection_from_ifcfg
+ *
+ *   create connection from roaming definition in .../wireless.d
+ *   this is not physical interface, so no interface related settings here
+ *   also it is always managed and marked for automatic activation
+ */
+static NMConnection *
+roaming_connection_from_ifcfg (const char *file,
+                                shvarFile *ifcfg,
+                                GError **error)
+{
+	NMConnection *connection = NULL;
+	NMSetting *con_setting = NULL;
+	NMSetting *wireless_setting = NULL;
+	NMSetting8021x *s_8021x = NULL;
+	const GByteArray *ssid;
+	NMSetting *security_setting = NULL;
+	char *printable_ssid = NULL, *tmp, *name;
+	gboolean adhoc = FALSE;
+
+	g_return_val_if_fail (file != NULL, NULL);
+	g_return_val_if_fail (ifcfg != NULL, NULL);
+	g_return_val_if_fail (error != NULL, NULL);
+	g_return_val_if_fail (*error == NULL, NULL);
+
+	/* Sanity checks */
+	tmp = svGetValue(ifcfg, "WIRELESS_WPA_DRIVER", FALSE);
+	if (!tmp) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			"WIRELESS_WPA_DRIVER missing in %s", file);
+		return NULL;
+	}
+	g_free(tmp);
+
+	tmp = svGetValue(ifcfg, "WIRELESS_ESSID", FALSE);
+	if (!tmp) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			"WIRELESS_ESSID missing in %s; ignoring connection", file);
+		return NULL;
+	}
+	name = g_path_get_basename(file);
+	if (strcmp(tmp, name)){
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			"WIRELESS_ESSID '%s' does not match file %s; ignoring connection", tmp, file);
+		g_free(name);
+		g_free(tmp);
+		return NULL;
+	}
+	g_free(name);
+	g_free(tmp);
+
+	connection = nm_connection_new ();
+	if (!connection) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		             "Failed to allocate new connection for %s.", file);
+		return NULL;
+	}
+
+	wireless_setting = make_wireless_setting (ifcfg, TRUE, TRUE, NULL, NULL, error);
+	if (!wireless_setting) {
+		g_object_unref (connection);
+		return NULL;
+	}
+	nm_connection_add_setting (connection, wireless_setting);
+
+	ssid = nm_setting_wireless_get_ssid (NM_SETTING_WIRELESS (wireless_setting));
+	g_assert(ssid);
+	printable_ssid = nm_utils_ssid_to_utf8 ((const char *) ssid->data, ssid->len);
+
+	/* Wireless security */
+	security_setting = make_wpa_supplicant_setting(ifcfg, file, ssid, adhoc, &s_8021x, error);
+	if (*error) {
+		g_object_unref (connection);
+		return NULL;
+	}
+	if (security_setting) {
+		nm_connection_add_setting (connection, security_setting);
+		if (s_8021x)
+			nm_connection_add_setting (connection, NM_SETTING (s_8021x));
+
+		g_object_set (wireless_setting, NM_SETTING_WIRELESS_SEC,
+			      NM_SETTING_WIRELESS_SECURITY_SETTING_NAME, NULL);
+	}
+
+	/* Connection */
+	con_setting = make_connection_setting (file, ifcfg,
+	                                       NM_SETTING_WIRELESS_SETTING_NAME,
+	                                       printable_ssid);
+	g_free (printable_ssid);
+	if (!con_setting) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		             "Failed to create connection setting.");
+		g_object_unref (connection);
+		return NULL;
+	}
+	nm_connection_add_setting (connection, con_setting);
+
+	return connection;
+}
+
 static NMConnection *
 wireless_connection_from_ifcfg (const char *file,
                                 shvarFile *ifcfg,
@@ -3038,7 +3142,7 @@ wireless_connection_from_ifcfg (const char *file,
 	}
 
 	/* Wireless */
-	wireless_setting = make_wireless_setting (ifcfg, nm_controlled, unmanaged, device, error);
+	wireless_setting = make_wireless_setting (ifcfg, nm_controlled, FALSE, unmanaged, device, error);
 	if (!wireless_setting) {
 		g_object_unref (connection);
 		return NULL;
@@ -3402,8 +3506,13 @@ connection_from_file (const char *filename,
 			*unmanaged = NULL;
 		}
 
-	} else {
+	} else if (ifcfg_type == MdvIfcfgTypeSSID) {
 		/* TODO directly jump to wireless WPA */
+		connection = roaming_connection_from_ifcfg(filename, parsed, error);
+	} else {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			"Ignoring BSSID file '%s'", filename);
+			goto done;
 	}
 
 	/* Don't bother reading the connection fully if it's unmanaged */
