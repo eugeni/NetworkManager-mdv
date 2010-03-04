@@ -46,6 +46,7 @@
 #include "shvar.h"
 #include "writer.h"
 #include "utils.h"
+#include "utils-mdv.h"
 
 static void system_config_interface_init (NMSystemConfigInterface *system_config_interface_class);
 
@@ -75,8 +76,11 @@ typedef struct {
 	int sc_network_wd;
 	char *hostname;
 
-	GFileMonitor *monitor;
-	guint monitor_id;
+	GFileMonitor *ifcfg_monitor;
+	guint ifcfg_monitor_id;
+
+	GFileMonitor *wireless_d_monitor;
+	guint wireless_d_monitor_id;
 } SCPluginIfcfgPrivate;
 
 
@@ -157,28 +161,33 @@ read_one_connection (SCPluginIfcfg *plugin, const char *filename)
 static void
 read_connections (SCPluginIfcfg *plugin)
 {
-	GDir *dir;
-	GError *err = NULL;
+	static const gchar *dirs[] = { IFCFG_DIR, IFCFG_WIRELESS_D_DIR, NULL };
+	const gchar **current;
 
-	dir = g_dir_open (IFCFG_DIR, 0, &err);
-	if (dir) {
-		const char *item;
+	for (current = dirs; current && *current; current++) {
+		GError *err = NULL;
+		GDir *dir = g_dir_open (*current, 0, &err);
 
-		while ((item = g_dir_read_name (dir))) {
-			char *full_path;
+		if (dir) {
+			const char *item;
 
-			if (utils_should_ignore_file (item, TRUE))
-				continue;
+			while ((item = g_dir_read_name (dir))) {
+				char *full_path = g_build_filename (*current, item, NULL);
 
-			full_path = g_build_filename (IFCFG_DIR, item, NULL);
-			read_one_connection (plugin, full_path);
-			g_free (full_path);
+				if (mdv_should_ignore_file (full_path)) {
+					g_free(full_path);
+					continue;
+				}
+
+				read_one_connection (plugin, full_path);
+				g_free (full_path);
+			}
+
+			g_dir_close (dir);
+		} else {
+			PLUGIN_WARN (IFCFG_PLUGIN_NAME, "Can not read directory '%s': %s", *current, err->message);
+			g_error_free (err);
 		}
-
-		g_dir_close (dir);
-	} else {
-		PLUGIN_WARN (IFCFG_PLUGIN_NAME, "Can not read directory '%s': %s", IFCFG_DIR, err->message);
-		g_error_free (err);
 	}
 }
 
@@ -303,42 +312,38 @@ dir_changed (GFileMonitor *monitor,
 {
 	SCPluginIfcfg *plugin = SC_PLUGIN_IFCFG (user_data);
 	SCPluginIfcfgPrivate *priv = SC_PLUGIN_IFCFG_GET_PRIVATE (plugin);
-	char *path, *name;
+	char *path;
 	NMIfcfgConnection *connection;
 	gboolean do_remove = FALSE, do_new = FALSE;
 
 	path = g_file_get_path (file);
-	if (utils_should_ignore_file (path, FALSE)) {
+	if (mdv_should_ignore_file (path)) {
 		g_free (path);
 		return;
 	}
 
-	/* Given any ifcfg, keys, or routes file, get the ifcfg file path */
-	name = utils_get_ifcfg_path (path);
-	g_free (path);
-
-	connection = g_hash_table_lookup (priv->connections, name);
+	connection = g_hash_table_lookup (priv->connections, path);
 	if (!connection) {
 		do_new = TRUE;
 	} else {
 		switch (event_type) {
 		case G_FILE_MONITOR_EVENT_DELETED:
-			PLUGIN_PRINT (IFCFG_PLUGIN_NAME, "removed %s.", name);
+			PLUGIN_PRINT (IFCFG_PLUGIN_NAME, "removed %s.", path);
 			do_remove = TRUE;
 			break;
 		case G_FILE_MONITOR_EVENT_CREATED:
 		case G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT:
 			/* Update */
-			connection_changed_handler (plugin, name, connection, &do_remove, &do_new);
+			connection_changed_handler (plugin, path, connection, &do_remove, &do_new);
 			break;
 		default:
 			break;
 		}
 	}
 
-	handle_connection_remove_or_new (plugin, name, connection, do_remove, do_new);
+	handle_connection_remove_or_new (plugin, path, connection, do_remove, do_new);
 
-	g_free (name);
+	g_free (path);
 }
 
 static void
@@ -355,8 +360,17 @@ setup_ifcfg_monitoring (SCPluginIfcfg *plugin)
 	g_object_unref (file);
 
 	if (monitor) {
-		priv->monitor_id = g_signal_connect (monitor, "changed", G_CALLBACK (dir_changed), plugin);
-		priv->monitor = monitor;
+		priv->ifcfg_monitor_id = g_signal_connect (monitor, "changed", G_CALLBACK (dir_changed), plugin);
+		priv->ifcfg_monitor = monitor;
+	}
+
+	file = g_file_new_for_path (IFCFG_WIRELESS_D_DIR "/");
+	monitor = g_file_monitor_directory (file, G_FILE_MONITOR_NONE, NULL, NULL);
+	g_object_unref (file);
+
+	if (monitor) {
+		priv->wireless_d_monitor_id = g_signal_connect (monitor, "changed", G_CALLBACK (dir_changed), plugin);
+		priv->wireless_d_monitor = monitor;
 	}
 }
 
@@ -543,12 +557,20 @@ dispose (GObject *object)
 	if (priv->connections)
 		g_hash_table_destroy (priv->connections);
 
-	if (priv->monitor) {
-		if (priv->monitor_id)
-			g_signal_handler_disconnect (priv->monitor, priv->monitor_id);
+	if (priv->ifcfg_monitor) {
+		if (priv->ifcfg_monitor_id)
+			g_signal_handler_disconnect (priv->ifcfg_monitor, priv->ifcfg_monitor_id);
 
-		g_file_monitor_cancel (priv->monitor);
-		g_object_unref (priv->monitor);
+		g_file_monitor_cancel (priv->ifcfg_monitor);
+		g_object_unref (priv->ifcfg_monitor);
+	}
+
+	if (priv->wireless_d_monitor) {
+		if (priv->wireless_d_monitor_id)
+			g_signal_handler_disconnect (priv->wireless_d_monitor, priv->wireless_d_monitor_id);
+
+		g_file_monitor_cancel (priv->wireless_d_monitor);
+		g_object_unref (priv->wireless_d_monitor);
 	}
 
 	G_OBJECT_CLASS (sc_plugin_ifcfg_parent_class)->dispose (object);
