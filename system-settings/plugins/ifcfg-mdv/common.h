@@ -35,6 +35,7 @@
 #define RPMNEW_TAG ".rpmnew"
 
 #define IFCFG_DIR SYSCONFDIR"/sysconfig/network-scripts"
+#define IFCFG_WIRELESS_D_DIR IFCFG_DIR"/wireless.d"
 
 #define IFCFG_PLUGIN_NAME "ifcfg-mdv"
 #define IFCFG_PLUGIN_INFO "(c) 2009 - 2010 Eugeni Dodonov <eugeni@mandriva.com>."
