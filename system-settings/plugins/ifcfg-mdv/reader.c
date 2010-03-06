@@ -2583,6 +2583,107 @@ error:
 	return NULL;
 }
 
+static gboolean
+read_wep_key_from_wpa (WPANetwork *wpan,
+               guint8 idx,
+               NMSettingWirelessSecurity *s_wsec,
+               GError **error)
+{
+	gchar *key_name, *key_val;
+	gboolean success = FALSE;
+
+	g_return_val_if_fail(wpan != NULL, FALSE);
+	g_return_val_if_fail(s_wsec != NULL, FALSE);
+
+	key_name = g_strdup_printf("wep_key%d", idx);
+	key_val = ifcfg_mdv_wpa_network_get_str(wpan, key_name);
+
+	if (key_val) {
+		nm_setting_wireless_security_set_wep_key(s_wsec, idx, key_val);
+		success = TRUE;
+	} else
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			"Missing wep_key%d", idx);
+
+	g_free(key_name);
+	g_free(key_val);
+
+	return success;
+}
+
+static gboolean
+make_wep_from_wpa_supplicant (WPANetwork *wpan,
+                  NMSettingWirelessSecurity *wsec,
+                  GError **error)
+{
+	char *value;
+	int default_key_idx = 0;
+
+	value = ifcfg_mdv_wpa_network_get_val(wpan, "wep_tx_keyidx");
+	if (value) {
+		gboolean success;
+
+		success = get_int (value, &default_key_idx);
+		if (success && (default_key_idx >= 0) && (default_key_idx <= 3)) {
+			/* Mandriva always assumes defalt key #0 */
+			if (default_key_idx != 0)
+				PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: wep_tx_keyidx != 0");
+			g_object_set (wsec, NM_SETTING_WIRELESS_SECURITY_WEP_TX_KEYIDX, default_key_idx, NULL);
+		} else {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			             "Invalid wep_tx_keyidx '%s'", value);
+			goto error;
+		}
+	}
+
+	/* Read default key */
+	if (!read_wep_key_from_wpa(wpan, default_key_idx, wsec, error))
+		goto error;
+
+	value = ifcfg_mdv_wpa_network_get_val(wpan, "auth_alg");
+	if (value) {
+		char *lcase;
+
+		lcase = g_ascii_strdown (value, -1);
+
+		if (!strcmp (lcase, "open")) {
+			g_object_set(wsec, NM_SETTING_WIRELESS_SECURITY_AUTH_ALG, "open", NULL);
+		} else if (!strcmp (lcase, "shared")) {
+			g_object_set(wsec, NM_SETTING_WIRELESS_SECURITY_AUTH_ALG, "shared", NULL);
+		} else {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			             "Invalid auth_alg '%s'",
+			             lcase);
+			g_free (lcase);
+			goto error;
+		}
+		g_free (lcase);
+	}
+
+	if (   !nm_setting_wireless_security_get_wep_key (wsec, 0)
+	    && !nm_setting_wireless_security_get_wep_key (wsec, 1)
+	    && !nm_setting_wireless_security_get_wep_key (wsec, 2)
+	    && !nm_setting_wireless_security_get_wep_key (wsec, 3)
+	    && !nm_setting_wireless_security_get_wep_tx_keyidx (wsec)) {
+		const char *auth_alg;
+
+		auth_alg = nm_setting_wireless_security_get_auth_alg (wsec);
+		if (auth_alg && !strcmp (auth_alg, "shared")) {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			             "WEP Shared Key authentication is invalid for "
+			             "unencrypted connections.");
+			goto error;
+		}
+
+		return FALSE;
+	}
+
+	return TRUE;
+
+error:
+	return FALSE;
+}
+
 static NMSetting *
 make_wpa_setting (shvarFile *ifcfg,
 		  WPANetwork *wpan,
@@ -2603,10 +2704,6 @@ make_wpa_setting (shvarFile *ifcfg,
 	 */
 	if (!key_mgmt)
 		key_mgmt = "WPA-PSK";
-
-	/* Is it WEP? */
-	if (!strcmp(key_mgmt, "NONE"))
-		return NULL;
 
 	wsec = NM_SETTING_WIRELESS_SECURITY (nm_setting_wireless_security_new ());
 
@@ -2693,6 +2790,9 @@ make_wpa_setting (shvarFile *ifcfg,
 			goto error;
 		g_object_set (wsec, NM_SETTING_WIRELESS_SECURITY_PSK, psk, NULL);
 		g_free (psk);
+	} else if (strstr (key_mgmt, "NONE")) {
+		if (!make_wep_from_wpa_supplicant(wpan, wsec, error))
+			goto error;
 	} else {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 		             "Unknown wireless KEY_MGMT type '%s'", key_mgmt);
