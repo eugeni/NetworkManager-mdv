@@ -2923,43 +2923,6 @@ done:
 }
 
 static NMSetting *
-make_wireless_security_setting (shvarFile *ifcfg,
-                                const char *file,
-                                const GByteArray *ssid,
-                                gboolean adhoc,
-                                NMSetting8021x **s_8021x,
-                                GError **error)
-{
-	NMSetting *wsec = NULL; /* unencrypted by default */
-	char *driver;
-
-	/*
-	 * Mandriva saves WPA parameters directly in wpa_supplicant.conf
-	 */
-	driver = svGetValue (ifcfg, "WIRELESS_WPA_DRIVER", FALSE);
-	if (driver) {
-		g_free (driver);
-
-		wsec = make_wpa_supplicant_setting(ifcfg, file, ssid, adhoc, s_8021x, error);
-	} else {
-
-#if 0
-		// LEAP does not seem to be supported by Mandriva
-		if (!adhoc) {
-			wsec = make_leap_setting (ifcfg, file, error);
-			if (wsec)
-				return wsec;
-			else if (*error)
-				goto error;
-		}
-#endif
-		wsec = make_wep_setting (ifcfg, file, error);
-	}
-
-	return wsec;
-}
-
-static NMSetting *
 make_wireless_setting (shvarFile *ifcfg,
                        gboolean nm_controlled,
 		       gboolean roaming,
@@ -3217,7 +3180,8 @@ wireless_connection_from_ifcfg (const char *file,
                                 gboolean nm_controlled,
                                 char **unmanaged,
                                 char *device,
-                                GError **error)
+                                GError **error,
+				gboolean *ignore_error)
 {
 	NMConnection *connection = NULL;
 	NMSetting *con_setting = NULL;
@@ -3256,12 +3220,44 @@ wireless_connection_from_ifcfg (const char *file,
 		printable_ssid = g_strdup_printf ("unmanaged");
 
 	if (nm_controlled) {
+		gchar *driver;
 		mode = nm_setting_wireless_get_mode (NM_SETTING_WIRELESS (wireless_setting));
 		if (mode && !strcmp (mode, "adhoc"))
 			adhoc = TRUE;
 
 		/* Wireless security */
-		security_setting = make_wireless_security_setting (ifcfg, file, ssid, adhoc, &s_8021x, error);
+		driver = svGetValue (ifcfg, "WIRELESS_WPA_DRIVER", FALSE);
+		if (driver) {
+			g_free (driver);
+
+			/*
+			 * If WIRELESS_WPA_DRIVER is set, it is roaming
+			 * connection which is defined in separate file
+			 * under .../wireless.d directory. To avoid duplicates,
+			 * do not return any connection at all
+			 */
+			PLUGIN_PRINT (IFCFG_PLUGIN_NAME, "    skipping interface in roaming mode (WIRELESS_WPA_DRIVER set)");
+			g_object_unref(connection);
+			connection = NULL;
+			*ignore_error = TRUE;
+			/* FIXME to silence read_one_connection in plugin.c */
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				"Skipped interface in roaming mode.");
+			return connection;
+		} else {
+
+#if 0
+			// LEAP does not seem to be supported by Mandriva
+			if (!adhoc) {
+				wsec = make_leap_setting (ifcfg, file, error);
+				if (wsec)
+					return wsec;
+				else if (*error)
+					goto error;
+			}
+#endif
+			security_setting = make_wep_setting (ifcfg, file, error);
+		}
 		if (*error) {
 			g_object_unref (connection);
 			return NULL;
@@ -3594,7 +3590,7 @@ connection_from_file (const char *filename,
 		if (!strcasecmp (type, TYPE_ETHERNET))
 			connection = wired_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error);
 		else if (!strcasecmp (type, TYPE_WIRELESS))
-			connection = wireless_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error);
+			connection = wireless_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error, ignore_error);
 		else {
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
 				     "Unknown connection type '%s'", type);
