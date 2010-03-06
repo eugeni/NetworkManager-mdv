@@ -44,6 +44,7 @@
 #include "reader.h"
 #include "writer.h"
 #include "utils.h"
+#include "utils-mdv.h"
 #include "crypto.h"
 
 #include "parse_wpa_supplicant_conf.h"
@@ -1718,6 +1719,12 @@ writer_update_connection (NMConnection *connection,
                           const char *keyfile,
                           GError **error)
 {
+	/* Temporary disable updating of roaming connection */
+	if (mdv_get_ifcfg_type(filename) != MdvIfcfgTypeInterface) {
+		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		             "Not yet implemented");
+		return FALSE;
+	}
 	return write_connection (connection, ifcfg_dir, filename, keyfile, NULL, error);
 }
 
