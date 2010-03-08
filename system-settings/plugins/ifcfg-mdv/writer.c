@@ -838,7 +838,7 @@ write_wireless_setting (NMConnection *connection,
 	tmp = svGetValue(ifcfg, "WIRELESS_ESSID", TRUE);
 	if (!tmp) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-		     "Missing WIRELESS_SSID in '%s'", ifcfg->fileName);
+		     "Missing WIRELESS_ESSID in '%s'", ifcfg->fileName);
 		return FALSE;
 	}
 	old_ssid = ifcfg_mdv_parse_ssid(tmp, error);
