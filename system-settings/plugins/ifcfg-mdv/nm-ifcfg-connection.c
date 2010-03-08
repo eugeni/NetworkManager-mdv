@@ -39,6 +39,7 @@
 #include "nm-ifcfg-connection.h"
 #include "reader.h"
 #include "utils.h"
+#include "utils-mdv.h"
 #include "writer.h"
 #include "nm-inotify-helper.h"
 
@@ -204,6 +205,23 @@ do_delete (NMSettingsConnectionInterface *connection,
 	NMSettingWireless *s_wireless;
 	WPANetwork *wpan;
 	const GByteArray *ssid = NULL;
+	MdvIfcfgType conntype = mdv_get_ifcfg_type(priv->filename);
+	GError *error = NULL;
+
+	/*
+	 * There is no obviouos way to create interface-specific configuration
+	 * on Mandriva. Current ifup/ifdown scripts do not handle spaces in
+	 * names and NM connections are not tied to specific interface so
+	 * do not offer means to enter interface name. So we do not create
+	 * them and do not allow to delete them. Users should use draknet.
+	 */
+	if (conntype != MdvIfcfgTypeSSID) {
+		g_set_error(&error, ifcfg_plugin_error_quark(), 0,
+			"Only roaming connection can be deleted");
+		callback(connection, error, user_data);
+		g_error_free(error);
+		return FALSE;
+	}
 
 	s_wireless = (NMSettingWireless *)nm_connection_get_setting(NM_CONNECTION(connection), NM_TYPE_SETTING_WIRELESS);
 	if (s_wireless)
