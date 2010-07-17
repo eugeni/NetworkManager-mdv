@@ -15,7 +15,7 @@
  * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
- * Copyright (C) 2005 - 2009 Red Hat, Inc.
+ * Copyright (C) 2005 - 2010 Red Hat, Inc.
  * Copyright (C) 2006 - 2008 Novell, Inc.
  */
 
@@ -35,7 +35,8 @@
 #include "nm-setting-ip4-config.h"
 #include "nm-dbus-manager.h"
 #include "nm-manager.h"
-#include "NetworkManagerSystem.h"
+#include "nm-system.h"
+#include "nm-logging.h"
 #include "nm-utils.h"
 #include "nm-vpn-plugin-bindings.h"
 #include "nm-marshal.h"
@@ -44,7 +45,7 @@
 #include "nm-dbus-glib-types.h"
 #include "NetworkManagerUtils.h"
 #include "nm-named-manager.h"
-#include "nm-netlink.h"
+#include "nm-netlink-monitor.h"
 #include "nm-glib-compat.h"
 
 #include "nm-vpn-connection-glue.h"
@@ -68,6 +69,7 @@ typedef struct {
 	gulong device_ip4;
 
 	gboolean is_default;
+	gboolean is_default6;
 	NMActiveConnectionState state;
 
 	NMVPNConnectionState vpn_state;
@@ -101,6 +103,7 @@ enum {
 	PROP_DEVICES,
 	PROP_STATE,
 	PROP_DEFAULT,
+	PROP_DEFAULT6,
 	PROP_VPN,
 	PROP_VPN_STATE,
 	PROP_BANNER,
@@ -116,6 +119,7 @@ nm_vpn_connection_set_vpn_state (NMVPNConnection *connection,
 	NMVPNConnectionPrivate *priv;
 	NMActiveConnectionState new_ac_state;
 	NMVPNConnectionState old_vpn_state;
+	char *ip_iface;
 
 	g_return_if_fail (NM_IS_VPN_CONNECTION (connection));
 
@@ -126,6 +130,11 @@ nm_vpn_connection_set_vpn_state (NMVPNConnection *connection,
 
 	old_vpn_state = priv->vpn_state;
 	priv->vpn_state = vpn_state;
+
+	/* Save ip_iface since when the VPN goes down it may get freed
+	 * before we're done with it.
+	 */
+	ip_iface = g_strdup (priv->tundev);
 
 	/* Set the NMActiveConnection state based on VPN state */
 	switch (vpn_state) {
@@ -163,7 +172,7 @@ nm_vpn_connection_set_vpn_state (NMVPNConnection *connection,
 		nm_utils_call_dispatcher ("vpn-up",
 		                          priv->connection,
 		                          priv->parent_dev,
-		                          priv->tundev);
+		                          ip_iface);
 		break;
 	case NM_VPN_CONNECTION_STATE_FAILED:
 	case NM_VPN_CONNECTION_STATE_DISCONNECTED:
@@ -171,13 +180,14 @@ nm_vpn_connection_set_vpn_state (NMVPNConnection *connection,
 			nm_utils_call_dispatcher ("vpn-down",
 			                          priv->connection,
 			                          priv->parent_dev,
-			                          priv->tundev);
+			                          ip_iface);
 		}
 		break;
 	default:
 		break;
 	}
 
+	g_free (ip_iface);
 	g_object_unref (connection);
 }
 
@@ -269,7 +279,7 @@ plugin_failed (DBusGProxy *proxy,
 {
 	NMVPNConnectionPrivate *priv = NM_VPN_CONNECTION_GET_PRIVATE (user_data);
 
-	nm_info ("VPN plugin failed: %d", plugin_failure);
+	nm_log_warn (LOGD_VPN, "VPN plugin failed: %d", plugin_failure);
 
 	switch (plugin_failure) {
 	case NM_VPN_PLUGIN_FAILURE_LOGIN_FAILED:
@@ -291,7 +301,7 @@ plugin_state_changed (DBusGProxy *proxy,
 	NMVPNConnection *connection = NM_VPN_CONNECTION (user_data);
 	NMVPNConnectionPrivate *priv = NM_VPN_CONNECTION_GET_PRIVATE (connection);
 
-	nm_info ("VPN plugin state changed: %d", state);
+	nm_log_info (LOGD_VPN, "VPN plugin state changed: %d", state);
 
 	if (state == NM_VPN_SERVICE_STATE_STOPPED) {
 		/* Clear connection secrets to ensure secrets get requested each time the
@@ -305,7 +315,7 @@ plugin_state_changed (DBusGProxy *proxy,
 		case NM_VPN_CONNECTION_STATE_CONNECT:
 		case NM_VPN_CONNECTION_STATE_IP_CONFIG_GET:
 		case NM_VPN_CONNECTION_STATE_ACTIVATED:
-			nm_info ("VPN plugin state change reason: %d", priv->failure_reason);
+			nm_log_info (LOGD_VPN, "VPN plugin state change reason: %d", priv->failure_reason);
 			nm_vpn_connection_set_vpn_state (connection,
 			                                 NM_VPN_CONNECTION_STATE_FAILED,
 											 priv->failure_reason);
@@ -331,8 +341,8 @@ ip_address_to_string (guint32 numeric)
 	if (inet_ntop (AF_INET, &temp_addr, buf, INET_ADDRSTRLEN)) {
 		return buf;
 	} else {
-		nm_warning ("%s: error converting IP4 address 0x%X",
-		            __func__, ntohl (temp_addr.s_addr));
+		nm_log_warn (LOGD_VPN, "error converting IP4 address 0x%X",
+		             ntohl (temp_addr.s_addr));
 		return NULL;
 	}
 }
@@ -351,38 +361,44 @@ print_vpn_config (NMIP4Config *config,
 
 	addr = nm_ip4_config_get_address (config, 0);
 
-	nm_info ("VPN Gateway: %s", ip_address_to_string (nm_ip4_address_get_gateway (addr)));
+	nm_log_info (LOGD_VPN, "VPN Gateway: %s", ip_address_to_string (nm_ip4_address_get_gateway (addr)));
 	if (internal_gw)
-		nm_info ("Internal Gateway: %s", ip_address_to_string (internal_gw));
-	nm_info ("Tunnel Device: %s", tundev);
-	nm_info ("Internal IP4 Address: %s", ip_address_to_string (nm_ip4_address_get_address (addr)));
-	nm_info ("Internal IP4 Prefix: %d", nm_ip4_address_get_prefix (addr));
-	nm_info ("Internal IP4 Point-to-Point Address: %s",
-		    ip_address_to_string (nm_ip4_config_get_ptp_address (config)));
-	nm_info ("Maximum Segment Size (MSS): %d", nm_ip4_config_get_mss (config));
+		nm_log_info (LOGD_VPN, "Internal Gateway: %s", ip_address_to_string (internal_gw));
+	nm_log_info (LOGD_VPN, "Tunnel Device: %s", tundev);
+	nm_log_info (LOGD_VPN, "Internal IP4 Address: %s", ip_address_to_string (nm_ip4_address_get_address (addr)));
+	nm_log_info (LOGD_VPN, "Internal IP4 Prefix: %d", nm_ip4_address_get_prefix (addr));
+	nm_log_info (LOGD_VPN, "Internal IP4 Point-to-Point Address: %s",
+	             ip_address_to_string (nm_ip4_config_get_ptp_address (config)));
+	nm_log_info (LOGD_VPN, "Maximum Segment Size (MSS): %d", nm_ip4_config_get_mss (config));
 
 	num = nm_ip4_config_get_num_routes (config);
 	for (i = 0; i < num; i++) {
 		NMIP4Route *route;
 
 		route = nm_ip4_config_get_route (config, i);
-		nm_info ("Static Route: %s/%d   Next Hop: %s",
-			    ip_address_to_string (nm_ip4_route_get_dest (route)),
-			    nm_ip4_route_get_prefix (route),
-			    ip_address_to_string (nm_ip4_route_get_next_hop (route)));
+		nm_log_info (LOGD_VPN, "Static Route: %s/%d   Next Hop: %s",
+		             ip_address_to_string (nm_ip4_route_get_dest (route)),
+		             nm_ip4_route_get_prefix (route),
+		             ip_address_to_string (nm_ip4_route_get_next_hop (route)));
 	}
 
 	num = nm_ip4_config_get_num_nameservers (config);
-	for (i = 0; i < num; i++)
-		nm_info ("Internal IP4 DNS: %s", ip_address_to_string (nm_ip4_config_get_nameserver (config, i)));
+	for (i = 0; i < num; i++) {
+		nm_log_info (LOGD_VPN, "Internal IP4 DNS: %s",
+		             ip_address_to_string (nm_ip4_config_get_nameserver (config, i)));
+	}
 
 	if (nm_ip4_config_get_num_domains (config) > 0)
 		dns_domain = (char *) nm_ip4_config_get_domain (config, 0);
-	nm_info ("DNS Domain: '%s'", dns_domain ? dns_domain : "(none)");
-	nm_info ("Login Banner:");
-	nm_info ("-----------------------------------------");
-	nm_info ("%s", banner);
-	nm_info ("-----------------------------------------");
+
+	nm_log_info (LOGD_VPN, "DNS Domain: '%s'", dns_domain ? dns_domain : "(none)");
+
+	if (banner && strlen (banner)) {
+		nm_log_info (LOGD_VPN, "Login Banner:");
+		nm_log_info (LOGD_VPN, "-----------------------------------------");
+		nm_log_info (LOGD_VPN, "%s", banner);
+		nm_log_info (LOGD_VPN, "-----------------------------------------");
+	}
 }
 
 static void
@@ -399,8 +415,8 @@ nm_vpn_connection_ip4_config_get (DBusGProxy *proxy,
 	int i;
 	guint32 vpn_ext_gw = 0;
 
-	nm_info ("VPN connection '%s' (IP Config Get) reply received.",
-		    nm_vpn_connection_get_name (connection));
+	nm_log_info (LOGD_VPN, "VPN connection '%s' (IP Config Get) reply received.",
+	             nm_vpn_connection_get_name (connection));
 
 	g_source_remove (priv->ipconfig_timeout);
 	priv->ipconfig_timeout = 0;
@@ -411,7 +427,7 @@ nm_vpn_connection_ip4_config_get (DBusGProxy *proxy,
 	if (val)
 		priv->tundev = g_strdup (g_value_get_string (val));
 	else {
-		nm_warning ("%s: invalid or missing tunnel device received!", __func__);
+		nm_log_err (LOGD_VPN, "invalid or missing tunnel device received!");
 		goto error;
 	}
 
@@ -445,7 +461,7 @@ nm_vpn_connection_ip4_config_get (DBusGProxy *proxy,
 	if (nm_ip4_address_get_address (addr) && nm_ip4_address_get_prefix (addr)) {
 		nm_ip4_config_take_address (config, addr);
 	} else {
-		nm_warning ("%s: invalid IP4 config received!", __func__);
+		nm_log_err (LOGD_VPN, "invalid IP4 config received!");
 		nm_ip4_address_unref (addr);
 		goto error;
 	}
@@ -532,8 +548,8 @@ nm_vpn_connection_ip4_config_get (DBusGProxy *proxy,
 
 		priv->ip4_config = config;
 
-		nm_info ("VPN connection '%s' (IP Config Get) complete.",
-			    nm_vpn_connection_get_name (connection));
+		nm_log_info (LOGD_VPN, "VPN connection '%s' (IP Config Get) complete.",
+		             nm_vpn_connection_get_name (connection));
 		nm_vpn_connection_set_vpn_state (connection,
 		                                 NM_VPN_CONNECTION_STATE_ACTIVATED,
 		                                 NM_VPN_CONNECTION_STATE_REASON_NONE);
@@ -541,8 +557,8 @@ nm_vpn_connection_ip4_config_get (DBusGProxy *proxy,
 	}
 
 error:
-	nm_warning ("VPN connection '%s' did not receive valid IP config information.",
-	            nm_vpn_connection_get_name (connection));
+	nm_log_warn (LOGD_VPN, "VPN connection '%s' did not receive valid IP config information.",
+	             nm_vpn_connection_get_name (connection));
 	nm_vpn_connection_set_vpn_state (connection,
 	                                 NM_VPN_CONNECTION_STATE_FAILED,
 	                                 NM_VPN_CONNECTION_STATE_REASON_IP_CONFIG_INVALID);
@@ -561,8 +577,8 @@ nm_vpn_connection_ip_config_timeout (gpointer user_data)
 	 * in this timeout, cancel activation because it's taken too long.
 	 */
 	if (nm_vpn_connection_get_vpn_state (connection) == NM_VPN_CONNECTION_STATE_IP_CONFIG_GET) {
-		nm_info ("VPN connection '%s' (IP Config Get) timeout exceeded.",
-		         nm_vpn_connection_get_name (connection));
+		nm_log_warn (LOGD_VPN, "VPN connection '%s' (IP Config Get) timeout exceeded.",
+		             nm_vpn_connection_get_name (connection));
 		nm_vpn_connection_set_vpn_state (connection,
 		                                 NM_VPN_CONNECTION_STATE_FAILED,
 		                                 NM_VPN_CONNECTION_STATE_REASON_CONNECT_TIMEOUT);
@@ -577,12 +593,12 @@ nm_vpn_connection_connect_cb (DBusGProxy *proxy, GError *err, gpointer user_data
 	NMVPNConnection *connection = NM_VPN_CONNECTION (user_data);
 	NMVPNConnectionPrivate *priv = NM_VPN_CONNECTION_GET_PRIVATE (connection);
 
-	nm_info ("VPN connection '%s' (Connect) reply received.",
-		    nm_vpn_connection_get_name (connection));
+	nm_log_info (LOGD_VPN, "VPN connection '%s' (Connect) reply received.",
+	             nm_vpn_connection_get_name (connection));
 
 	if (err) {
-		nm_warning ("VPN connection '%s' failed to connect: '%s'.", 
-				  nm_vpn_connection_get_name (connection), err->message);
+		nm_log_warn (LOGD_VPN, "VPN connection '%s' failed to connect: '%s'.", 
+		             nm_vpn_connection_get_name (connection), err->message);
 		nm_vpn_connection_set_vpn_state (connection,
 		                                 NM_VPN_CONNECTION_STATE_FAILED,
 		                                 NM_VPN_CONNECTION_STATE_REASON_SERVICE_START_FAILED);
@@ -777,9 +793,9 @@ secrets_update_setting (NMSecretsProviderInterface *interface,
 		return FALSE;
 
 	if (!nm_connection_update_secrets (priv->connection, NM_SETTING_VPN_SETTING_NAME, new, &error)) {
-		nm_warning ("Failed to update VPN secrets: %d %s",
-		            error ? error->code : -1,
-		            error && error->message ? error->message : "(none)");
+		nm_log_warn (LOGD_VPN, "Failed to update VPN secrets: %d %s",
+		             error ? error->code : -1,
+		             error && error->message ? error->message : "(none)");
 		g_clear_error (&error);
 		return FALSE;
 	}
@@ -823,9 +839,9 @@ connection_need_secrets_cb  (DBusGProxy *proxy,
 	NMVPNConnectionPrivate *priv = NM_VPN_CONNECTION_GET_PRIVATE (self);
 
 	if (error) {
-		g_warning ("%s.%d: NeedSecrets failed: %s %s",
-		           __FILE__, __LINE__,
-		           g_quark_to_string (error->domain), error->message);
+		nm_log_err (LOGD_VPN, "NeedSecrets failed: %s %s",
+		            g_quark_to_string (error->domain),
+		            error->message);
 		nm_vpn_connection_fail (self, NM_VPN_CONNECTION_STATE_REASON_NO_SECRETS);
 		return;
 	}
@@ -869,7 +885,8 @@ vpn_cleanup (NMVPNConnection *connection)
 
 	if (priv->tundev) {
 		nm_system_device_set_up_down_with_iface (priv->tundev, FALSE, NULL);
-		nm_system_device_flush_routes_with_iface (priv->tundev);
+		/* FIXME: use AF_UNSPEC here when we have IPv6 support */
+		nm_system_device_flush_routes_with_iface (priv->tundev, AF_INET);
 		nm_system_device_flush_addresses_with_iface (priv->tundev);
 	}
 
@@ -893,7 +910,7 @@ vpn_cleanup (NMVPNConnection *connection)
 			                                 nm_device_get_ip4_config (priv->parent_dev),
 			                                 nm_device_get_priority (priv->parent_dev),
 			                                 NM_IP4_COMPARE_FLAG_ADDRESSES | NM_IP4_COMPARE_FLAG_ROUTES)) {
-				nm_warning ("%s: failed to re-apply VPN parent device addresses and routes.", __func__);
+				nm_log_err (LOGD_VPN, "failed to re-apply VPN parent device addresses and routes.");
 			}
 		}
 	}
@@ -940,7 +957,7 @@ connection_state_changed (NMVPNConnection *connection,
 
 			org_freedesktop_NetworkManager_VPN_Plugin_disconnect (priv->proxy, &err);
 			if (err) {
-				nm_warning ("%s", err->message);
+				nm_log_warn (LOGD_VPN, "error disconnecting VPN: %s", err->message);
 				g_error_free (err);
 			}
 
@@ -1045,6 +1062,9 @@ get_property (GObject *object, guint prop_id,
 	case PROP_DEFAULT:
 		g_value_set_boolean (value, priv->is_default);
 		break;
+	case PROP_DEFAULT6:
+		g_value_set_boolean (value, priv->is_default6);
+		break;
 	case PROP_VPN:
 		g_value_set_boolean (value, TRUE);
 		break;
@@ -1115,7 +1135,14 @@ nm_vpn_connection_class_init (NMVPNConnectionClass *connection_class)
 		(object_class, PROP_DEFAULT,
 		 g_param_spec_boolean (NM_ACTIVE_CONNECTION_DEFAULT,
 							   "Default",
-							   "Is the default active connection",
+							   "Is the default IPv4 active connection",
+							   FALSE,
+							   G_PARAM_READABLE));
+	g_object_class_install_property
+		(object_class, PROP_DEFAULT6,
+		 g_param_spec_boolean (NM_ACTIVE_CONNECTION_DEFAULT6,
+							   "Default6",
+							   "Is the default IPv6 active connection",
 							   FALSE,
 							   G_PARAM_READABLE));
 	g_object_class_install_property

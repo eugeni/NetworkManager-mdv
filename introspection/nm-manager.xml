@@ -87,7 +87,10 @@
     <method name="Sleep">
       <annotation name="org.freedesktop.DBus.GLib.CSymbol" value="impl_manager_sleep"/>
       <tp:docstring>
-        Control the NetworkManager daemon's sleep state.  When asleep, all interfaces that it manages are deactivated.  When awake, devices are available to be activated.
+        Control the NetworkManager daemon's sleep state.  When asleep, all
+        interfaces that it manages are deactivated.  When awake, devices are
+        available to be activated.  This command should not be called directly
+        by users or clients; it is intended for system suspend/resume tracking.
       </tp:docstring>
       <arg name="sleep" type="b" direction="in">
         <tp:docstring>
@@ -95,6 +98,52 @@
         </tp:docstring>
       </arg>
     </method>
+
+    <method name="Enable">
+      <annotation name="org.freedesktop.DBus.GLib.CSymbol" value="impl_manager_enable"/>
+      <tp:docstring>
+        Control whether overall networking is enabled or disabled.  When
+        disabled, all interfaces that NM manages are deactivated.  When enabled,
+        all managed interfaces are re-enabled and available to be activated.
+        This command should be used by clients that provide to users the ability
+        to enable/disable all networking.
+      </tp:docstring>
+      <arg name="enable" type="b" direction="in">
+        <tp:docstring>
+          If FALSE, indicates that all networking should be disabled.  If TRUE,
+          indicates that NetworkManager should begin managing network devices.
+        </tp:docstring>
+      </arg>
+    </method>
+
+    <method name="SetLogging">
+      <annotation name="org.freedesktop.DBus.GLib.CSymbol" value="impl_manager_set_logging"/>
+      <tp:docstring>
+        Set logging verbosity and which operations are logged.
+      </tp:docstring>
+      <arg name="level" type="s" direction="in">
+        <tp:docstring>
+          One of [ERR, WARN, INFO, DEBUG].
+        </tp:docstring>
+      </arg>
+      <arg name="domains" type="s" direction="in">
+        <tp:docstring>
+          A combination of logging domains separated by commas (','), or "NONE"
+          to disable logging.  Each domain enables logging for operations
+          related to that domain.  Available domains are: [NONE, HW, RFKILL,
+          ETHER, WIFI, BT, MB, DHCP4, DHCP6, PPP, WIFI_SCAN, IP4, IP6, AUTOIP4,
+          DNS, VPN, SHARING, SUPPLICANT, USER_SET, SYS_SET, SUSPEND, CORE,
+          DEVICE, OLPC]
+        </tp:docstring>
+      </arg>
+    </method>
+
+    <property name="NetworkingEnabled" type="b" access="read">
+      <tp:docstring>
+        Indicates if overall networking is currently enabled or not.  See the
+        Enable() method.
+      </tp:docstring>
+    </property>
 
     <property name="WirelessEnabled" type="b" access="readwrite">
       <tp:docstring>

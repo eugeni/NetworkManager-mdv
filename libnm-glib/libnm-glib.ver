@@ -18,6 +18,7 @@ global:
 	nm_access_point_new;
 	nm_active_connection_get_connection;
 	nm_active_connection_get_default;
+	nm_active_connection_get_default6;
 	nm_active_connection_get_devices;
 	nm_active_connection_get_scope;
 	nm_active_connection_get_service_name;
@@ -35,6 +36,8 @@ global:
 	nm_client_get_manager_running;
 	nm_client_get_state;
 	nm_client_get_type;
+	nm_client_networking_get_enabled;
+	nm_client_networking_set_enabled;
 	nm_client_new;
 	nm_client_sleep;
 	nm_client_wireless_get_enabled;
@@ -129,6 +132,7 @@ global:
 	nm_settings_connection_interface_get_type;
 	nm_settings_connection_interface_update;
 	nm_settings_interface_add_connection;
+	nm_settings_interface_error_get_type;
 	nm_settings_interface_error_quark;
 	nm_settings_interface_get_connection_by_path;
 	nm_settings_interface_get_type;

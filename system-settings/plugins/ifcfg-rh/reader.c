@@ -15,7 +15,7 @@
  * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
- * Copyright (C) 2008 - 2009 Red Hat, Inc.
+ * Copyright (C) 2008 - 2010 Red Hat, Inc.
  */
 
 #include <stdlib.h>
@@ -606,16 +606,9 @@ read_full_ip4_address (shvarFile *ifcfg,
 
 	/* Try to autodetermine the prefix for the address' class */
 	if (!nm_ip4_address_get_prefix (addr)) {
-		guint32 tmp_addr, prefix = 0;
+		guint32 prefix = 0;
 
-		tmp_addr = nm_ip4_address_get_address (addr);
-		if (((ntohl(tmp_addr) & 0xFF000000) >> 24) <= 127)
-			prefix = 8;
-		else if (((ntohl(tmp_addr) & 0xFF000000) >> 24) <= 191)
-			prefix = 16;
-		else
-			prefix = 24;
-
+		prefix = nm_utils_ip4_get_default_prefix (nm_ip4_address_get_address (addr));
 		nm_ip4_address_set_prefix (addr, prefix);
 
 		value = svGetValue (ifcfg, ip_tag, FALSE);
@@ -1122,6 +1115,7 @@ static NMSetting *
 make_ip4_setting (shvarFile *ifcfg,
                   const char *network_file,
                   const char *iscsiadm_path,
+                  gboolean valid_ip6_config,
                   GError **error)
 {
 	NMSettingIP4Config *s_ip4 = NULL;
@@ -1199,14 +1193,17 @@ make_ip4_setting (shvarFile *ifcfg,
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
 			             "Unknown BOOTPROTO '%s'", value);
 			g_free (value);
-			goto error;
+			goto done;
 		}
 		g_free (value);
 	} else {
 		char *tmp_ip4, *tmp_prefix, *tmp_netmask;
 
-		/* If there is no BOOTPROTO, no IPADDR, no PREFIX, and no NETMASK,
-		 * assume DHCP is to be used.  Happens with minimal ifcfg files like:
+		/* If there is no BOOTPROTO, no IPADDR, no PREFIX, no NETMASK, but
+		 * valid IPv6 configuration, assume that IPv4 is disabled.  Otherwise,
+		 * if there is no IPv6 configuration, assume DHCP is to be used.
+		 * Happens with minimal ifcfg files like the following that anaconda
+		 * sometimes used to write out:
 		 *
 		 * DEVICE=eth0
 		 * HWADDR=11:22:33:44:55:66
@@ -1215,8 +1212,17 @@ make_ip4_setting (shvarFile *ifcfg,
 		tmp_ip4 = svGetValue (ifcfg, "IPADDR", FALSE);
 		tmp_prefix = svGetValue (ifcfg, "PREFIX", FALSE);
 		tmp_netmask = svGetValue (ifcfg, "NETMASK", FALSE);
-		if (!tmp_ip4 && !tmp_prefix && !tmp_netmask)
+		if (!tmp_ip4 && !tmp_prefix && !tmp_netmask) {
+			if (valid_ip6_config) {
+				/* Nope, no IPv4 */
+				g_object_set (s_ip4,
+				              NM_SETTING_IP4_CONFIG_METHOD, NM_SETTING_IP4_CONFIG_METHOD_DISABLED,
+				              NULL);
+				return NM_SETTING (s_ip4);
+			}
+
 			method = NM_SETTING_IP4_CONFIG_METHOD_AUTO;
+		}
 		g_free (tmp_ip4);
 		g_free (tmp_prefix);
 		g_free (tmp_netmask);
@@ -1227,6 +1233,7 @@ make_ip4_setting (shvarFile *ifcfg,
 	              NM_SETTING_IP4_CONFIG_IGNORE_AUTO_DNS, !svTrueValue (ifcfg, "PEERDNS", TRUE),
 	              NM_SETTING_IP4_CONFIG_IGNORE_AUTO_ROUTES, !svTrueValue (ifcfg, "PEERROUTES", TRUE),
 	              NM_SETTING_IP4_CONFIG_NEVER_DEFAULT, never_default,
+	              NM_SETTING_IP4_CONFIG_MAY_FAIL, !svTrueValue (ifcfg, "IPV4_FAILURE_FATAL", TRUE),
 	              NULL);
 
 	/* Handle manual settings */
@@ -1236,7 +1243,7 @@ make_ip4_setting (shvarFile *ifcfg,
 		for (i = 1; i < 256; i++) {
 			addr = read_full_ip4_address (ifcfg, network_file, i, error);
 			if (error && *error)
-				goto error;
+				goto done;
 			if (!addr)
 				break;
 
@@ -1278,7 +1285,7 @@ make_ip4_setting (shvarFile *ifcfg,
 			}
 			if (!tmp_success) {
 				g_free (tag);
-				goto error;
+				goto done;
 			}
 			g_clear_error (error);
 		}
@@ -1312,7 +1319,7 @@ make_ip4_setting (shvarFile *ifcfg,
 	if (!route_path) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 		             "Could not get route file path for '%s'", ifcfg->fileName);
-		goto error;
+		goto done;
 	}
 
 	/* First test new/legacy syntax */
@@ -1326,7 +1333,7 @@ make_ip4_setting (shvarFile *ifcfg,
 				route = read_one_ip4_route (route_ifcfg, network_file, i, error);
 				if (error && *error) {
 					svCloseFile (route_ifcfg);
-					goto error;
+					goto done;
 				}
 				if (!route)
 					break;
@@ -1341,7 +1348,7 @@ make_ip4_setting (shvarFile *ifcfg,
 		read_route_file_legacy (route_path, s_ip4, error);
 		g_free (route_path);
 		if (error && *error)
-			goto error;
+			goto done;
 	}
 
 	/* Legacy value NM used for a while but is incorrect (rh #459370) */
@@ -1367,7 +1374,7 @@ make_ip4_setting (shvarFile *ifcfg,
 
 	return NM_SETTING (s_ip4);
 
-error:
+done:
 	g_object_unref (s_ip4);
 	return NULL;
 }
@@ -1479,6 +1486,7 @@ make_ip6_setting (shvarFile *ifcfg,
 	              NM_SETTING_IP6_CONFIG_IGNORE_AUTO_DNS, !svTrueValue (ifcfg, "IPV6_PEERDNS", TRUE),
 	              NM_SETTING_IP6_CONFIG_IGNORE_AUTO_ROUTES, !svTrueValue (ifcfg, "IPV6_PEERROUTES", TRUE),
 	              NM_SETTING_IP6_CONFIG_NEVER_DEFAULT, never_default,
+	              NM_SETTING_IP6_CONFIG_MAY_FAIL, !svTrueValue (ifcfg, "IPV6_FAILURE_FATAL", FALSE),
 	              NULL);
 
 	if (!strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_MANUAL)) {
@@ -1572,6 +1580,7 @@ static gboolean
 add_one_wep_key (shvarFile *ifcfg,
                  const char *shvar_key,
                  guint8 key_idx,
+                 gboolean passphrase,
                  NMSettingWirelessSecurity *s_wsec,
                  GError **error)
 {
@@ -1591,42 +1600,57 @@ add_one_wep_key (shvarFile *ifcfg,
 	}
 
 	/* Validate keys */
-	if (strlen (value) == 10 || strlen (value) == 26) {
-		/* Hexadecimal WEP key */
-		char *p = value;
-
-		while (*p) {
-			if (!g_ascii_isxdigit (*p)) {
-				g_set_error (error, ifcfg_plugin_error_quark (), 0,
-				             "Invalid hexadecimal WEP key.");
-				goto out;
-			}
-			p++;
+	if (passphrase) {
+		if (strlen (value) && strlen (value) < 64) {
+			key = g_strdup (value);
+			g_object_set (G_OBJECT (s_wsec),
+			              NM_SETTING_WIRELESS_SECURITY_WEP_KEY_TYPE,
+			              NM_WEP_KEY_TYPE_PASSPHRASE,
+			              NULL);
 		}
-		key = g_strdup (value);
-	} else if (   strncmp (value, "s:", 2)
-	           && (strlen (value) == 7 || strlen (value) == 15)) {
-		/* ASCII passphrase */
-		char *p = value + 2;
-
-		while (*p) {
-			if (!isascii ((int) (*p))) {
-				g_set_error (error, ifcfg_plugin_error_quark (), 0,
-				             "Invalid ASCII WEP passphrase.");
-				goto out;
-			}
-			p++;
-		}
-
-		key = utils_bin2hexstr (value, strlen (value), strlen (value) * 2);
 	} else {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0, "Invalid WEP key length.");
+		if (strlen (value) == 10 || strlen (value) == 26) {
+			/* Hexadecimal WEP key */
+			char *p = value;
+
+			while (*p) {
+				if (!g_ascii_isxdigit (*p)) {
+					g_set_error (error, ifcfg_plugin_error_quark (), 0,
+					             "Invalid hexadecimal WEP key.");
+					goto out;
+				}
+				p++;
+			}
+			key = g_strdup (value);
+		} else if (   !strncmp (value, "s:", 2)
+		           && (strlen (value) == 7 || strlen (value) == 15)) {
+			/* ASCII key */
+			char *p = value + 2;
+
+			while (*p) {
+				if (!isascii ((int) (*p))) {
+					g_set_error (error, ifcfg_plugin_error_quark (), 0,
+					             "Invalid ASCII WEP key.");
+					goto out;
+				}
+				p++;
+			}
+
+			/* Remove 's:' prefix.
+			 * Don't convert to hex string. wpa_supplicant takes 'wep_key0' option over D-Bus as byte array
+			 * and converts it to hex string itself. Even though we convert hex string keys into a bin string
+			 * before passing to wpa_supplicant, this prevents two unnecessary conversions. And mainly,
+			 * ASCII WEP key doesn't change to HEX WEP key in UI, which could confuse users.
+			 */
+			key = g_strdup (value + 2);
+		}
 	}
 
 	if (key) {
 		nm_setting_wireless_security_set_wep_key (s_wsec, key_idx, key);
 		success = TRUE;
-	}
+	} else
+		g_set_error (error, ifcfg_plugin_error_quark (), 0, "Invalid WEP key length.");
 
 out:
 	g_free (value);
@@ -1639,15 +1663,26 @@ read_wep_keys (shvarFile *ifcfg,
                NMSettingWirelessSecurity *s_wsec,
                GError **error)
 {
-	if (!add_one_wep_key (ifcfg, "KEY1", 0, s_wsec, error))
+	/* Try hex/ascii keys first */
+	if (!add_one_wep_key (ifcfg, "KEY1", 0, FALSE, s_wsec, error))
 		return FALSE;
-	if (!add_one_wep_key (ifcfg, "KEY2", 1, s_wsec, error))
+	if (!add_one_wep_key (ifcfg, "KEY2", 1, FALSE, s_wsec, error))
 		return FALSE;
-	if (!add_one_wep_key (ifcfg, "KEY3", 2, s_wsec, error))
+	if (!add_one_wep_key (ifcfg, "KEY3", 2, FALSE, s_wsec, error))
 		return FALSE;
-	if (!add_one_wep_key (ifcfg, "KEY4", 3, s_wsec, error))
+	if (!add_one_wep_key (ifcfg, "KEY4", 3, FALSE, s_wsec, error))
 		return FALSE;
-	if (!add_one_wep_key (ifcfg, "KEY", def_idx, s_wsec, error))
+	if (!add_one_wep_key (ifcfg, "KEY", def_idx, FALSE, s_wsec, error))
+		return FALSE;
+
+	/* And then passphrases */
+	if (!add_one_wep_key (ifcfg, "KEY_PASSPHRASE1", 0, TRUE, s_wsec, error))
+		return FALSE;
+	if (!add_one_wep_key (ifcfg, "KEY_PASSPHRASE2", 1, TRUE, s_wsec, error))
+		return FALSE;
+	if (!add_one_wep_key (ifcfg, "KEY_PASSPHRASE3", 2, TRUE, s_wsec, error))
+		return FALSE;
+	if (!add_one_wep_key (ifcfg, "KEY_PASSPHRASE4", 3, TRUE, s_wsec, error))
 		return FALSE;
 
 	return TRUE;
@@ -1695,6 +1730,7 @@ make_wep_setting (shvarFile *ifcfg,
 			goto error;
 		}
 		svCloseFile (keys_ifcfg);
+		g_assert (error == NULL || *error == NULL);
 	}
 
 	/* If there's a default key, ensure that key exists */
@@ -3062,6 +3098,7 @@ connection_from_file (const char *filename,
 	NMSetting *s_ip4, *s_ip6;
 	const char *ifcfg_name = NULL;
 	gboolean nm_controlled = TRUE;
+	gboolean ip6_used = FALSE;
 
 	g_return_val_if_fail (filename != NULL, NULL);
 	g_return_val_if_fail (unmanaged != NULL, NULL);
@@ -3165,22 +3202,27 @@ connection_from_file (const char *filename,
 	if (!connection || *unmanaged)
 		goto done;
 
-	s_ip4 = make_ip4_setting (parsed, network_file, iscsiadm_path, error);
-	if (*error) {
-		g_object_unref (connection);
-		connection = NULL;
-		goto done;
-	} else if (s_ip4) {
-		nm_connection_add_setting (connection, s_ip4);
-	}
-
 	s_ip6 = make_ip6_setting (parsed, network_file, iscsiadm_path, error);
 	if (*error) {
 		g_object_unref (connection);
 		connection = NULL;
 		goto done;
-	} else if (s_ip6)
+	} else if (s_ip6) {
+		const char *method;
+
 		nm_connection_add_setting (connection, s_ip6);
+		method = nm_setting_ip6_config_get_method (NM_SETTING_IP6_CONFIG (s_ip6));
+		if (method && strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_IGNORE))
+			ip6_used = TRUE;
+	}
+
+	s_ip4 = make_ip4_setting (parsed, network_file, iscsiadm_path, ip6_used, error);
+	if (*error) {
+		g_object_unref (connection);
+		connection = NULL;
+		goto done;
+	} else if (s_ip4)
+		nm_connection_add_setting (connection, s_ip4);
 
 	/* iSCSI / ibft connections are read-only since their settings are
 	 * stored in NVRAM and can only be changed in BIOS.

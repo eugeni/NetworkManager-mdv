@@ -31,6 +31,7 @@
 #include <nm-setting-wired.h>
 #include <nm-setting-wireless.h>
 #include <nm-setting-ip4-config.h>
+#include <nm-setting-bluetooth.h>
 #include <nm-utils.h>
 #include <string.h>
 #include <arpa/inet.h>
@@ -226,18 +227,27 @@ ip6_dns_writer (GKeyFile *file,
 }
 
 static gboolean
-ip6_array_to_addr (GValueArray *values, guint32 idx, char *buf, size_t buflen)
+ip6_array_to_addr (GValueArray *values,
+                   guint32 idx,
+                   char *buf,
+                   size_t buflen,
+                   gboolean *out_is_unspec)
 {
 	GByteArray *byte_array;
 	GValue *addr_val;
+	struct in6_addr *addr;
 
 	g_return_val_if_fail (buflen >= INET6_ADDRSTRLEN, FALSE);
 
-	/* address */
 	addr_val = g_value_array_get_nth (values, idx);
 	byte_array = g_value_get_boxed (addr_val);
+	addr = (struct in6_addr *) byte_array->data;
+
+	if (out_is_unspec && IN6_IS_ADDR_UNSPECIFIED (addr))
+		*out_is_unspec = TRUE;
+
 	errno = 0;
-	if (!inet_ntop (AF_INET6, (struct in6_addr *) byte_array->data, buf, buflen)) {
+	if (!inet_ntop (AF_INET6, addr, buf, buflen)) {
 		GString *ip6_str = g_string_sized_new (INET6_ADDRSTRLEN + 10);
 
 		/* error converting the address */
@@ -259,17 +269,23 @@ ip6_array_to_addr_prefix (GValueArray *values)
 	GValue *prefix_val;
 	char *ret = NULL;
 	GString *ip6_str;
-	char buf[INET6_ADDRSTRLEN];
+	char buf[INET6_ADDRSTRLEN + 1];
+	gboolean is_unspec = FALSE;
 
 	/* address */
-	if (ip6_array_to_addr (values, 0, buf, sizeof (buf))) {
+	if (ip6_array_to_addr (values, 0, buf, sizeof (buf), NULL)) {
 		/* Enough space for the address, '/', and the prefix */
-		ip6_str = g_string_sized_new (INET6_ADDRSTRLEN + 5);
+		ip6_str = g_string_sized_new ((INET6_ADDRSTRLEN * 2) + 5);
 
 		/* prefix */
 		g_string_append (ip6_str, buf);
 		prefix_val = g_value_array_get_nth (values, 1);
 		g_string_append_printf (ip6_str, "/%u", g_value_get_uint (prefix_val));
+
+		if (ip6_array_to_addr (values, 2, buf, sizeof (buf), &is_unspec)) {
+			if (!is_unspec)
+				g_string_append_printf (ip6_str, ",%s", buf);
+		}
 
 		ret = ip6_str->str;
 		g_string_free (ip6_str, FALSE);
@@ -298,9 +314,9 @@ ip6_addr_writer (GKeyFile *file,
 		GValueArray *values = g_ptr_array_index (array, i);
 		char *key_name, *ip6_addr;
 
-		if (values->n_values % 2) {
-			nm_warning ("%s: error writing IP6 address %d; address array length"
-			            " %d is not a multiple of 2.",
+		if (values->n_values != 3) {
+			nm_warning ("%s: error writing IP6 address %d (address array length "
+			            "%d is not 3)",
 			            __func__, i, values->n_values);
 			continue;
 		}
@@ -337,7 +353,8 @@ ip6_route_writer (GKeyFile *file,
 		GValueArray *values = g_ptr_array_index (array, i);
 		char *key_name;
 		guint32 int_val;
-		char buf[INET6_ADDRSTRLEN];
+		char buf[INET6_ADDRSTRLEN + 1];
+		gboolean is_unspec = FALSE;
 
 		memset (list, 0, sizeof (list));
 
@@ -347,7 +364,9 @@ ip6_route_writer (GKeyFile *file,
 			continue;
 
 		/* Next Hop */
-		if (!ip6_array_to_addr (values, 2, buf, sizeof (buf)))
+		if (!ip6_array_to_addr (values, 2, buf, sizeof (buf), &is_unspec))
+			continue;
+		if (is_unspec)
 			continue;
 		list[1] = g_strdup (buf);
 
@@ -475,6 +494,9 @@ static KeyWriter key_writers[] = {
 	{ NM_SETTING_WIRELESS_SETTING_NAME,
 	  NM_SETTING_WIRELESS_BSSID,
 	  mac_address_writer },
+	{ NM_SETTING_BLUETOOTH_SETTING_NAME,
+	  NM_SETTING_BLUETOOTH_BDADDR,
+	  mac_address_writer },
 	{ NULL, NULL, NULL }
 };
 
@@ -487,10 +509,9 @@ write_setting_value (NMSetting *setting,
 {
 	GKeyFile *file = (GKeyFile *) user_data;
 	const char *setting_name;
-	GType type;
+	GType type = G_VALUE_TYPE (value);
 	KeyWriter *writer = &key_writers[0];
-
-	type = G_VALUE_TYPE (value);
+	GParamSpec *pspec;
 
 	/* Setting name gets picked up from the keyfile's section name instead */
 	if (!strcmp (key, NM_SETTING_NAME))
@@ -502,6 +523,15 @@ write_setting_value (NMSetting *setting,
 		return;
 
 	setting_name = nm_setting_get_name (setting);
+
+	/* If the value is the default value, remove the item from the keyfile */
+	pspec = g_object_class_find_property (G_OBJECT_GET_CLASS (setting), key);
+	if (pspec) {
+		if (g_param_value_defaults (pspec, (GValue *) value)) {
+			g_key_file_remove_key (file, setting_name, key, NULL);
+			return;
+		}
+	}
 
 	/* Look through the list of handlers for non-standard format key values */
 	while (writer->setting_name) {

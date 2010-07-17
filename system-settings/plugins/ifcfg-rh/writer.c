@@ -15,7 +15,7 @@
  * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
- * Copyright (C) 2009 Red Hat, Inc.
+ * Copyright (C) 2009 - 2010 Red Hat, Inc.
  */
 
 #include <ctype.h>
@@ -579,20 +579,56 @@ write_wireless_security_setting (NMConnection *connection,
 		}
 	}
 
+	/* WEP keys */
+
+	/* Clear existing keys */
+	set_secret (ifcfg, "KEY", NULL, FALSE); /* Clear any default key */
+	for (i = 0; i < 4; i++) {
+		tmp = g_strdup_printf ("KEY_PASSPHRASE%d", i + 1);
+		set_secret (ifcfg, tmp, NULL, FALSE);
+		g_free (tmp);
+
+		tmp = g_strdup_printf ("KEY%d", i + 1);
+		set_secret (ifcfg, tmp, NULL, FALSE);
+		g_free (tmp);
+	}
+
+	/* And write the new ones out */
 	if (wep) {
 		/* Default WEP TX key index */
 		tmp = g_strdup_printf ("%d", nm_setting_wireless_security_get_wep_tx_keyidx (s_wsec) + 1);
 		svSetValue (ifcfg, "DEFAULTKEY", tmp, FALSE);
 		g_free (tmp);
-	}
 
-	/* WEP keys */
-	set_secret (ifcfg, "KEY", NULL, FALSE); /* Clear any default key */
-	for (i = 0; i < 4; i++) {
-		key = nm_setting_wireless_security_get_wep_key (s_wsec, i);
-		tmp = g_strdup_printf ("KEY%d", i + 1);
-		set_secret (ifcfg, tmp, (wep && key) ? key : NULL, FALSE);
-		g_free (tmp);
+		for (i = 0; i < 4; i++) {
+			NMWepKeyType key_type;
+
+			key = nm_setting_wireless_security_get_wep_key (s_wsec, i);
+			if (key) {
+				char *ascii_key = NULL;
+
+				/* Passphrase needs a different ifcfg key since with WEP, there
+				 * are some passphrases that are indistinguishable from WEP hex
+				 * keys.
+				 */
+				key_type = nm_setting_wireless_security_get_wep_key_type (s_wsec);
+				if (key_type == NM_WEP_KEY_TYPE_PASSPHRASE)
+					tmp = g_strdup_printf ("KEY_PASSPHRASE%d", i + 1);
+				else {
+					tmp = g_strdup_printf ("KEY%d", i + 1);
+
+					/* Add 's:' prefix for ASCII keys */
+					if (strlen (key) == 5 || strlen (key) == 13) {
+						ascii_key = g_strdup_printf ("s:%s", key);
+						key = ascii_key;
+					}
+				}
+
+				set_secret (ifcfg, tmp, key, FALSE);
+				g_free (tmp);
+				g_free (ascii_key);
+			}
+		}
 	}
 
 	/* WPA protos */
@@ -732,13 +768,20 @@ write_wireless_setting (NMConnection *connection,
 		svSetValue (ifcfg, "ESSID", str->str, TRUE);
 		g_string_free (str, TRUE);
 	} else {
-		/* Printable SSIDs get quoted */
+		/* Printable SSIDs always get quoted */
 		memset (buf, 0, sizeof (buf));
 		memcpy (buf, ssid->data, ssid->len);
-		tmp2 = svEscape (buf);
-		tmp = g_strdup_printf ("\"%s\"", tmp2);
-		svSetValue (ifcfg, "ESSID", tmp, TRUE);
-		g_free (tmp2);
+		tmp = svEscape (buf);
+
+		/* svEscape will usually quote the string, but just for consistency,
+		 * if svEscape doesn't quote the ESSID, we quote it ourselves.
+		 */
+		if (tmp[0] != '"' && tmp[strlen (tmp) - 1] != '"') {
+			tmp2 = g_strdup_printf ("\"%s\"", tmp);
+			svSetValue (ifcfg, "ESSID", tmp2, TRUE);
+			g_free (tmp2);
+		} else
+			svSetValue (ifcfg, "ESSID", tmp, TRUE);
 		g_free (tmp);
 	}
 
@@ -807,6 +850,7 @@ write_wired_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		g_free (tmp);
 	}
 
+	svSetValue (ifcfg, "MTU", NULL, FALSE);
 	mtu = nm_setting_wired_get_mtu (s_wired);
 	if (mtu) {
 		tmp = g_strdup_printf ("%u", mtu);
@@ -907,12 +951,41 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	guint32 i, num;
 	GString *searches;
 	gboolean success = FALSE;
+	const char *method = NULL;
 
 	s_ip4 = (NMSettingIP4Config *) nm_connection_get_setting (connection, NM_TYPE_SETTING_IP4_CONFIG);
-	if (!s_ip4) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-		             "Missing '%s' setting", NM_SETTING_IP4_CONFIG_SETTING_NAME);
-		return FALSE;
+	if (s_ip4)
+		method = nm_setting_ip4_config_get_method (s_ip4);
+
+	/* Missing IP4 setting is assumed to be DHCP */
+	if (!method)
+		method = NM_SETTING_IP4_CONFIG_METHOD_AUTO;
+
+	if (!strcmp (method, NM_SETTING_IP4_CONFIG_METHOD_DISABLED)) {
+		int result;
+
+		/* IPv4 disabled, clear IPv4 related parameters */
+		svSetValue (ifcfg, "BOOTPROTO", NULL, FALSE);
+		for (i = 0; i < 254; i++) {
+			if (i == 0) {
+				addr_key = g_strdup ("IPADDR");
+				prefix_key = g_strdup ("PREFIX");
+				gw_key = g_strdup ("GATEWAY");
+			} else {
+				addr_key = g_strdup_printf ("IPADDR%d", i + 1);
+				prefix_key = g_strdup_printf ("PREFIX%d", i + 1);
+				gw_key = g_strdup_printf ("GATEWAY%d", i + 1);
+			}
+
+			svSetValue (ifcfg, addr_key, NULL, FALSE);
+			svSetValue (ifcfg, prefix_key, NULL, FALSE);
+			svSetValue (ifcfg, gw_key, NULL, FALSE);
+		}
+
+		route_path = utils_get_route_path (ifcfg->fileName);
+		result = unlink (route_path);
+		g_free (route_path);
+		return TRUE;
 	}
 
 	value = nm_setting_ip4_config_get_method (s_ip4);
@@ -1030,6 +1103,10 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		if (value)
 			svSetValue (ifcfg, "DHCP_CLIENT_ID", value, FALSE);
 	}
+
+	svSetValue (ifcfg, "IPV4_FAILURE_FATAL",
+	            nm_setting_ip4_config_get_may_fail (s_ip4) ? "no" : "yes",
+	            FALSE);
 
 	/* Static routes - route-<name> file */
 	route_path = utils_get_route_path (ifcfg->fileName);
@@ -1205,18 +1282,23 @@ write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	g_assert (value);
 	if (!strcmp (value, NM_SETTING_IP6_CONFIG_METHOD_IGNORE)) {
 		svSetValue (ifcfg, "IPV6INIT", "no", FALSE);
+		svSetValue (ifcfg, "DHCPV6C", NULL, FALSE);
 		return TRUE;
 	} else if (!strcmp (value, NM_SETTING_IP6_CONFIG_METHOD_AUTO)) {
 		svSetValue (ifcfg, "IPV6INIT", "yes", FALSE);
 		svSetValue (ifcfg, "IPV6_AUTOCONF", "yes", FALSE);
+		svSetValue (ifcfg, "DHCPV6C", NULL, FALSE);
 	} else if (!strcmp (value, NM_SETTING_IP6_CONFIG_METHOD_MANUAL)) {
 		svSetValue (ifcfg, "IPV6INIT", "yes", FALSE);
 		svSetValue (ifcfg, "IPV6_AUTOCONF", "no", FALSE);
+		svSetValue (ifcfg, "DHCPV6C", NULL, FALSE);
 	} else if (!strcmp (value, NM_SETTING_IP6_CONFIG_METHOD_LINK_LOCAL)) {
 		svSetValue (ifcfg, "IPV6INIT", "yes", FALSE);
 		svSetValue (ifcfg, "IPV6_AUTOCONF", "no", FALSE);
+		svSetValue (ifcfg, "DHCPV6C", NULL, FALSE);
 	} else if (!strcmp (value, NM_SETTING_IP6_CONFIG_METHOD_SHARED)) {
 		svSetValue (ifcfg, "IPV6INIT", "yes", FALSE);
+		svSetValue (ifcfg, "DHCPV6C", NULL, FALSE);
 		/* TODO */
 	}
 
@@ -1307,6 +1389,10 @@ write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		            nm_setting_ip6_config_get_ignore_auto_routes (s_ip6) ? "no" : "yes",
 		            FALSE);
 	}
+
+	svSetValue (ifcfg, "IPV6_FAILURE_FATAL",
+	            nm_setting_ip6_config_get_may_fail (s_ip6) ? "no" : "yes",
+	            FALSE);
 
 	/* Static routes go to route6-<dev> file */
 	route6_path = utils_get_route6_path (ifcfg->fileName);

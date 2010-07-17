@@ -16,7 +16,7 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  * Copyright (C) 2007 - 2009 Novell, Inc.
- * Copyright (C) 2007 - 2009 Red Hat, Inc.
+ * Copyright (C) 2007 - 2010 Red Hat, Inc.
  */
 
 #include <netinet/ether.h>
@@ -26,18 +26,19 @@
 
 #include "nm-glib-compat.h"
 #include "nm-manager.h"
-#include "nm-utils.h"
+#include "nm-logging.h"
 #include "nm-dbus-manager.h"
 #include "nm-vpn-manager.h"
 #include "nm-modem-manager.h"
-#include "nm-modem.h"
 #include "nm-device-bt.h"
 #include "nm-device-interface.h"
 #include "nm-device-private.h"
 #include "nm-device-ethernet.h"
 #include "nm-device-wifi.h"
 #include "nm-device-olpc-mesh.h"
-#include "NetworkManagerSystem.h"
+#include "nm-device-cdma.h"
+#include "nm-device-gsm.h"
+#include "nm-system.h"
 #include "nm-properties-changed-signal.h"
 #include "nm-setting-bluetooth.h"
 #include "nm-setting-connection.h"
@@ -57,13 +58,6 @@
 #define NM_AUTOIP_DBUS_SERVICE "org.freedesktop.nm_avahi_autoipd"
 #define NM_AUTOIP_DBUS_IFACE   "org.freedesktop.nm_avahi_autoipd"
 
-#define NM_MANAGER_STATE "state"
-#define NM_MANAGER_WIRELESS_ENABLED "wireless-enabled"
-#define NM_MANAGER_WIRELESS_HARDWARE_ENABLED "wireless-hardware-enabled"
-#define NM_MANAGER_WWAN_ENABLED "wwan-enabled"
-#define NM_MANAGER_WWAN_HARDWARE_ENABLED "wwan-hardware-enabled"
-#define NM_MANAGER_ACTIVE_CONNECTIONS "active-connections"
-
 static gboolean impl_manager_get_devices (NMManager *manager, GPtrArray **devices, GError **err);
 static void impl_manager_activate_connection (NMManager *manager,
 								  const char *service_name,
@@ -77,6 +71,13 @@ static gboolean impl_manager_deactivate_connection (NMManager *manager,
                                                     GError **error);
 
 static gboolean impl_manager_sleep (NMManager *manager, gboolean sleep, GError **err);
+
+static gboolean impl_manager_enable (NMManager *manager, gboolean enable, GError **err);
+
+static gboolean impl_manager_set_logging (NMManager *manager,
+                                          const char *level,
+                                          const char *domains,
+                                          GError **error);
 
 /* Legacy 0.6 compatibility interface */
 
@@ -127,15 +128,15 @@ static const char *internal_activate_device (NMManager *manager,
                                              gboolean assumed,
                                              GError **error);
 
-static NMDevice *
-find_device_by_iface (NMManager *self, const gchar *iface);
+static NMDevice *find_device_by_iface (NMManager *self, const gchar *iface);
 
-static GSList *
-remove_one_device (NMManager *manager,
-                   GSList *list,
-                   NMDevice *device,
-                   gboolean quitting,
-                   gboolean force_unmanage);
+static GSList * remove_one_device (NMManager *manager,
+                                   GSList *list,
+                                   NMDevice *device,
+                                   gboolean quitting,
+                                   gboolean force_unmanage);
+
+static NMDevice *nm_manager_get_device_by_udi (NMManager *manager, const char *udi);
 
 #define SSD_POKE_INTERVAL 120
 #define ORIGDEV_TAG "originating-device"
@@ -152,16 +153,12 @@ typedef struct {
 typedef struct {
 	gboolean enabled;
 	gboolean hw_enabled;
+	RfKillType rtype;
 	const char *desc;
 	const char *key;
 	const char *prop;
 	const char *hw_prop;
-	/* Hack for WWAN for 0.8 release; we'll start using udev
-	 * after 0.8 gets out.
-	 */
-	gboolean ignore_udev;
 	RfKillState (*other_enabled_func) (NMManager *);
-	gboolean (*object_filter_func) (GObject *);
 } RadioState;
 
 typedef struct {
@@ -188,6 +185,7 @@ typedef struct {
 
 	RadioState radio_states[RFKILL_TYPE_MAX];
 	gboolean sleeping;
+	gboolean net_enabled;
 
 	NMVPNManager *vpn_manager;
 	guint vpn_manager_id;
@@ -226,6 +224,7 @@ static guint signals[LAST_SIGNAL] = { 0 };
 enum {
 	PROP_0,
 	PROP_STATE,
+	PROP_NETWORKING_ENABLED,
 	PROP_WIRELESS_ENABLED,
 	PROP_WIRELESS_HARDWARE_ENABLED,
 	PROP_WWAN_ENABLED,
@@ -249,6 +248,7 @@ typedef enum
 	NM_MANAGER_ERROR_PERMISSION_DENIED,
 	NM_MANAGER_ERROR_CONNECTION_NOT_ACTIVE,
 	NM_MANAGER_ERROR_ALREADY_ASLEEP_OR_AWAKE,
+	NM_MANAGER_ERROR_ALREADY_ENABLED_OR_DISABLED,
 } NMManagerError;
 
 #define NM_MANAGER_ERROR (nm_manager_error_quark ())
@@ -291,11 +291,23 @@ nm_manager_error_get_type (void)
 			ENUM_ENTRY (NM_MANAGER_ERROR_CONNECTION_NOT_ACTIVE, "ConnectionNotActive"),
 			/* The manager is already in the requested sleep state */
 			ENUM_ENTRY (NM_MANAGER_ERROR_ALREADY_ASLEEP_OR_AWAKE, "AlreadyAsleepOrAwake"),
+			/* The manager is already in the requested enabled/disabled state */
+			ENUM_ENTRY (NM_MANAGER_ERROR_ALREADY_ENABLED_OR_DISABLED, "AlreadyEnabledOrDisabled"),
 			{ 0, 0, 0 },
 		};
 		etype = g_enum_register_static ("NMManagerError", values);
 	}
 	return etype;
+}
+
+static gboolean
+manager_sleeping (NMManager *self)
+{
+	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (self);
+
+	if (priv->sleeping || !priv->net_enabled)
+		return TRUE;
+	return FALSE;
 }
 
 static void
@@ -310,26 +322,17 @@ vpn_manager_connection_deactivated_cb (NMVPNManager *manager,
 
 static void
 modem_added (NMModemManager *modem_manager,
-			 NMDevice *modem,
+			 NMModem *modem,
+			 const char *driver,
 			 gpointer user_data)
 {
-	NMManagerPrivate *priv;
-	NMDeviceType type;
-	NMDevice *replace_device;
-	const char *type_name;
+	NMManager *self = NM_MANAGER (user_data);
+	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (self);
+	NMDevice *replace_device, *device = NULL;
 	const char *ip_iface;
+	GSList *iter;
 
-	priv = NM_MANAGER_GET_PRIVATE (user_data);
-
-	type = nm_device_get_device_type (NM_DEVICE (modem));
-	if (type == NM_DEVICE_TYPE_GSM)
-		type_name = "GSM modem";
-	else if (type == NM_DEVICE_TYPE_CDMA)
-		type_name = "CDMA modem";
-	else
-		type_name = "Unknown modem";
-
-	ip_iface = nm_device_get_ip_iface (modem);
+	ip_iface = nm_modem_get_iface (modem);
 
 	replace_device = find_device_by_iface (NM_MANAGER (user_data), ip_iface);
 	if (replace_device) {
@@ -340,7 +343,33 @@ modem_added (NMModemManager *modem_manager,
 		                                   TRUE);
 	}
 
-	add_device (NM_MANAGER (user_data), NM_DEVICE (g_object_ref (modem)));
+	/* Give Bluetooth DUN devices first chance to claim the modem */
+	for (iter = priv->devices; iter; iter = g_slist_next (iter)) {
+		if (NM_IS_DEVICE_BT (iter->data)) {
+			if (nm_device_bt_modem_added (NM_DEVICE_BT (iter->data), modem, driver))
+				return;
+		}
+	}
+
+	/* If it was a Bluetooth modem and no bluetooth device claimed it, ignore
+	 * it.  The rfcomm port (and thus the modem) gets created automatically
+	 * by the Bluetooth code during the connection process.
+	 */
+	if (driver && !strcmp (driver, "bluetooth")) {
+		nm_log_info (LOGD_MB, "ignoring modem '%s' (no associated Bluetooth device)", ip_iface);
+		return;
+	}
+
+	/* Otherwise make a new top-level NMDevice for it */
+	if (NM_IS_MODEM_GSM (modem))
+		device = nm_device_gsm_new (NM_MODEM_GSM (modem), driver);
+	else if (NM_IS_MODEM_CDMA (modem))
+		device = nm_device_cdma_new (NM_MODEM_CDMA (modem), driver);
+	else
+		nm_log_info (LOGD_MB, "unhandled modem '%s'", ip_iface);
+
+	if (device)
+		add_device (self, device);
 }
 
 static void
@@ -353,9 +382,9 @@ nm_manager_update_state (NMManager *manager)
 
 	priv = NM_MANAGER_GET_PRIVATE (manager);
 
-	if (priv->sleeping) {
+	if (manager_sleeping (manager))
 		new_state = NM_STATE_ASLEEP;
-	} else {
+	else {
 		GSList *iter;
 
 		for (iter = priv->devices; iter; iter = iter->next) {
@@ -438,13 +467,26 @@ remove_one_device (NMManager *manager,
 
 static void
 modem_removed (NMModemManager *modem_manager,
-			   NMDevice *modem,
+			   NMModem *modem,
 			   gpointer user_data)
 {
 	NMManager *self = NM_MANAGER (user_data);
 	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (self);
+	NMDevice *found;
+	GSList *iter;
 
-	priv->devices = remove_one_device (self, priv->devices, modem, FALSE, TRUE);
+	/* Give Bluetooth DUN devices first chance to handle the modem removal */
+	for (iter = priv->devices; iter; iter = g_slist_next (iter)) {
+		if (NM_IS_DEVICE_BT (iter->data)) {
+			if (nm_device_bt_modem_removed (NM_DEVICE_BT (iter->data), modem))
+				return;
+		}
+	}
+
+	/* Otherwise remove the standalone modem */
+	found = nm_manager_get_device_by_udi (self, nm_modem_get_path (modem));
+	if (found)
+		priv->devices = remove_one_device (self, priv->devices, found, FALSE, TRUE);
 }
 
 static void
@@ -460,7 +502,7 @@ aipd_handle_event (DBusGProxy *proxy,
 	gboolean handled = FALSE;
 
 	if (!event || !iface) {
-		nm_warning ("Incomplete message received from avahi-autoipd");
+		nm_log_warn (LOGD_AUTOIP4, "incomplete message received from avahi-autoipd");
 		return;
 	}
 
@@ -468,7 +510,7 @@ aipd_handle_event (DBusGProxy *proxy,
 	    && (strcmp (event, "CONFLICT") != 0)
 	    && (strcmp (event, "UNBIND") != 0)
 	    && (strcmp (event, "STOP") != 0)) {
-		nm_warning ("Unknown event '%s' received from avahi-autoipd", event);
+		nm_log_warn (LOGD_AUTOIP4, "unknown event '%s' received from avahi-autoipd", event);
 		return;
 	}
 
@@ -483,7 +525,7 @@ aipd_handle_event (DBusGProxy *proxy,
 	}
 
 	if (!handled)
-		nm_warning ("Unhandled avahi-autoipd event for '%s'", iface);
+		nm_log_warn (LOGD_AUTOIP4, "(%s): unhandled avahi-autoipd event", iface);
 }
 
 static const char *
@@ -665,7 +707,8 @@ user_connection_get_settings_cb  (DBusGProxy *proxy,
 	if (!dbus_g_proxy_end_call (proxy, call_id, &err,
 	                            DBUS_TYPE_G_MAP_OF_MAP_OF_VARIANT, &settings,
 	                            G_TYPE_INVALID)) {
-		nm_warning ("Couldn't retrieve connection settings: %s.", err->message);
+		nm_log_info (LOGD_USER_SET, "couldn't retrieve connection settings: %s.",
+		             err && err->message ? err->message : "(unknown)");
 		g_error_free (err);
 		goto out;
 	}
@@ -680,10 +723,9 @@ user_connection_get_settings_cb  (DBusGProxy *proxy,
 
 		connection = nm_connection_new_from_hash (settings, &error);
 		if (connection == NULL) {
-			nm_warning ("%s: Invalid connection: '%s' / '%s' invalid: %d",
-			            __func__,
-			            g_type_name (nm_connection_lookup_setting_type_by_quark (error->domain)),
-			            error->message, error->code);
+			nm_log_warn (LOGD_USER_SET, "invalid connection: '%s' / '%s' invalid: %d",
+			             g_type_name (nm_connection_lookup_setting_type_by_quark (error->domain)),
+			             error->message, error->code);
 			g_error_free (error);
 			goto out;
 		}
@@ -726,7 +768,7 @@ user_connection_get_settings_cb  (DBusGProxy *proxy,
 		}
 	} else {
 		// FIXME: merge settings? or just replace?
-		nm_warning ("%s (#%d): implement merge settings", __func__, __LINE__);
+		nm_log_dbg (LOGD_USER_SET, "implement merge settings");
 	}
 
 out:
@@ -774,10 +816,9 @@ user_connection_updated_cb (DBusGProxy *proxy,
 	new_connection = nm_connection_new_from_hash (settings, &error);
 	if (!new_connection) {
 		/* New connection invalid, remove existing connection */
-		nm_warning ("%s: Invalid connection: '%s' / '%s' invalid: %d",
-		            __func__,
-		            g_type_name (nm_connection_lookup_setting_type_by_quark (error->domain)),
-		            error->message, error->code);
+		nm_log_warn (LOGD_USER_SET, "invalid connection: '%s' / '%s' invalid: %d",
+		             g_type_name (nm_connection_lookup_setting_type_by_quark (error->domain)),
+		             error->message, error->code);
 		g_error_free (error);
 		remove_connection (manager, old_connection, priv->user_connections);
 		return;
@@ -814,7 +855,7 @@ user_internal_new_connection_cb (DBusGProxy *proxy,
 	                                       path,
 	                                       NM_DBUS_IFACE_SETTINGS_CONNECTION);
 	if (!con_proxy) {
-		nm_warning ("Error: could not init user connection proxy");
+		nm_log_err (LOGD_USER_SET, "could not init user connection proxy");
 		return;
 	}
 
@@ -860,7 +901,8 @@ user_list_connections_cb  (DBusGProxy *proxy,
 	if (!dbus_g_proxy_end_call (proxy, call_id, &err,
 	                            DBUS_TYPE_G_ARRAY_OF_OBJECT_PATH, &ops,
 	                            G_TYPE_INVALID)) {
-		nm_warning ("Couldn't retrieve connections: %s.", err->message);
+		nm_log_warn (LOGD_USER_SET, "couldn't retrieve connections: %s",
+		             err && err->message ? err->message : "(unknown)");
 		g_error_free (err);
 		goto out;
 	}
@@ -906,7 +948,7 @@ user_query_connections (NMManager *manager)
 		                                              NM_DBUS_PATH_SETTINGS,
 		                                              NM_DBUS_IFACE_SETTINGS);
 		if (!priv->user_proxy) {
-			nm_warning ("Error: could not init settings proxy");
+			nm_log_err (LOGD_USER_SET, "could not init user settings proxy");
 			return;
 		}
 
@@ -949,16 +991,15 @@ system_connection_updated_cb (NMSettingsConnectionInterface *connection,
 	if (!existing)
 		return;
 	if (existing != connection) {
-		g_warning ("%s: existing connection didn't matched updated.", __func__);
+		nm_log_warn (LOGD_SYS_SET, "existing connection didn't matched updated.");
 		return;
 	}
 
 	if (!nm_connection_verify (NM_CONNECTION (existing), &error)) {
 		/* Updated connection invalid, remove existing connection */
-		nm_warning ("%s: Invalid connection: '%s' / '%s' invalid: %d",
-		            __func__,
-		            g_type_name (nm_connection_lookup_setting_type_by_quark (error->domain)),
-		            error->message, error->code);
+		nm_log_warn (LOGD_SYS_SET, "invalid connection: '%s' / '%s' invalid: %d",
+		             g_type_name (nm_connection_lookup_setting_type_by_quark (error->domain)),
+		             error->message, error->code);
 		g_error_free (error);
 		remove_connection (manager, NM_CONNECTION (existing), priv->system_connections);
 		return;
@@ -1200,22 +1241,28 @@ manager_set_radio_enabled (NMManager *manager,
 		                                "main", rstate->key,
 		                                G_TYPE_BOOLEAN, (gpointer) &enabled,
 		                                &error)) {
-			g_warning ("Writing to state file %s failed: (%d) %s.",
-			           priv->state_file,
-			           error ? error->code : -1,
-			           (error && error->message) ? error->message : "unknown");
+			nm_log_warn (LOGD_CORE, "writing to state file %s failed: (%d) %s.",
+			             priv->state_file,
+			             error ? error->code : -1,
+			             (error && error->message) ? error->message : "unknown");
 		}
 	}
 
 	/* Don't touch devices if asleep/networking disabled */
-	if (priv->sleeping)
+	if (manager_sleeping (manager))
 		return;
 
 	/* enable/disable wireless devices as required */
 	for (iter = priv->devices; iter; iter = iter->next) {
-		if (   rstate->object_filter_func
-			&& rstate->object_filter_func (G_OBJECT (iter->data)))
+		RfKillType devtype = RFKILL_TYPE_UNKNOWN;
+
+		g_object_get (G_OBJECT (iter->data), NM_DEVICE_INTERFACE_RFKILL_TYPE, &devtype, NULL);
+		if (devtype == rstate->rtype) {
+			nm_log_dbg (LOGD_RFKILL, "(%s): setting radio %s",
+			            nm_device_get_iface (NM_DEVICE (iter->data)),
+			            enabled ? "enabled" : "disabled");
 			nm_device_interface_set_enabled (NM_DEVICE_INTERFACE (iter->data), enabled);
+		}
 	}
 }
 
@@ -1314,9 +1361,11 @@ nm_manager_get_modem_enabled_state (NMManager *self)
 	for (iter = priv->devices; iter; iter = g_slist_next (iter)) {
 		NMDevice *candidate = NM_DEVICE (iter->data);
 		RfKillState candidate_state = RFKILL_UNBLOCKED;
+		RfKillType devtype = RFKILL_TYPE_UNKNOWN;
 
-		if (NM_IS_MODEM (candidate)) {
-			if (nm_modem_get_mm_enabled (NM_MODEM (candidate)) == FALSE)
+		g_object_get (G_OBJECT (candidate), NM_DEVICE_INTERFACE_RFKILL_TYPE, &devtype, NULL);
+		if (devtype == RFKILL_TYPE_WWAN) {
+			if (!nm_device_interface_get_enabled (NM_DEVICE_INTERFACE (candidate)))
 				candidate_state = RFKILL_SOFT_BLOCKED;
 
 			if (candidate_state > wwan_state)
@@ -1325,18 +1374,6 @@ nm_manager_get_modem_enabled_state (NMManager *self)
 	}
 
 	return wwan_state;
-}
-
-static gboolean
-rfkill_wlan_filter (GObject *object)
-{
-	return NM_IS_DEVICE_WIFI (object);
-}
-
-static gboolean
-rfkill_wwan_filter (GObject *object)
-{
-	return NM_IS_MODEM (object);
 }
 
 static void
@@ -1350,8 +1387,7 @@ manager_rfkill_update_one_type (NMManager *self,
 	RfKillState composite;
 	gboolean new_e = TRUE, new_he = TRUE;
 
-	if (!rstate->ignore_udev)
-		udev_state = nm_udev_manager_get_rfkill_state (priv->udev_mgr, rtype);
+	udev_state = nm_udev_manager_get_rfkill_state (priv->udev_mgr, rtype);
 
 	if (rstate->other_enabled_func)
 		other_state = rstate->other_enabled_func (self);
@@ -1381,13 +1417,19 @@ manager_rfkill_update_one_type (NMManager *self,
 		break;
 	}
 
+	if (rstate->desc) {
+		nm_log_dbg (LOGD_RFKILL, "%s hw-enabled %d enabled %d",
+		            rstate->desc, new_he, new_e);
+	}
+
 	if (new_he != rstate->hw_enabled) {
-		nm_info ("%s now %s by radio killswitch",
-		         rstate->desc,
-		         (new_e && new_he) ? "enabled" : "disabled");
+		nm_log_info (LOGD_RFKILL, "%s now %s by radio killswitch",
+		             rstate->desc,
+		             (new_e && new_he) ? "enabled" : "disabled");
 
 		rstate->hw_enabled = new_he;
-		g_object_notify (G_OBJECT (self), rstate->hw_prop);
+		if (rstate->hw_prop)
+			g_object_notify (G_OBJECT (self), rstate->hw_prop);
 	}
 	manager_set_radio_enabled (self, rstate, new_e);
 }
@@ -1417,9 +1459,7 @@ manager_ipw_rfkill_state_changed (NMDeviceWifi *device,
 }
 
 static void
-manager_modem_enabled_changed (NMModem *device,
-                               GParamSpec *pspec,
-                               gpointer user_data)
+manager_modem_enabled_changed (NMModem *device, gpointer user_data)
 {
 	nm_manager_rfkill_update (NM_MANAGER (user_data), RFKILL_TYPE_WWAN);
 }
@@ -1440,7 +1480,7 @@ add_device (NMManager *self, NMDevice *device)
 	iface = nm_device_get_ip_iface (device);
 	g_assert (iface);
 
-	if (!NM_IS_MODEM(device) && nm_modem_manager_has_modem_for_iface (priv->modem_manager, iface)) {
+	if (!NM_IS_DEVICE_MODEM (device) && find_device_by_iface (self, iface)) {
 		g_object_unref (device);
 		return;
 	}
@@ -1472,8 +1512,8 @@ add_device (NMManager *self, NMDevice *device)
 		nm_manager_rfkill_update (self, RFKILL_TYPE_WLAN);
 		nm_device_interface_set_enabled (NM_DEVICE_INTERFACE (device),
 		                                 priv->radio_states[RFKILL_TYPE_WLAN].enabled);
-	} else if (NM_IS_MODEM (device)) {
-		g_signal_connect (device, "notify::" NM_MODEM_ENABLED,
+	} else if (NM_IS_DEVICE_MODEM (device)) {
+		g_signal_connect (device, NM_DEVICE_MODEM_ENABLE_CHANGED,
 		                  G_CALLBACK (manager_modem_enabled_changed),
 		                  self);
 
@@ -1491,14 +1531,15 @@ add_device (NMManager *self, NMDevice *device)
 	driver = nm_device_get_driver (device);
 	if (!driver)
 		driver = "unknown";
-	nm_info ("(%s): new %s device (driver: '%s')", iface, type_desc, driver);
+	nm_log_info (LOGD_HW, "(%s): new %s device (driver: '%s' ifindex: %d)",
+	             iface, type_desc, driver, nm_device_get_ifindex (device));
 
 	path = g_strdup_printf ("/org/freedesktop/NetworkManager/Devices/%d", devcount++);
 	nm_device_set_path (device, path);
 	dbus_g_connection_register_g_object (nm_dbus_manager_get_connection (priv->dbus_mgr),
 	                                     path,
 	                                     G_OBJECT (device));
-	nm_info ("(%s): exported as %s", iface, path);
+	nm_log_info (LOGD_CORE, "(%s): exported as %s", iface, path);
 	g_free (path);
 
 	/* Check if we should assume the device's active connection by matching its
@@ -1513,11 +1554,20 @@ add_device (NMManager *self, NMDevice *device)
 		existing = nm_device_interface_connection_match_config (NM_DEVICE_INTERFACE (device),
 		                                                        (const GSList *) connections);
 		g_slist_free (connections);
+
+		if (existing) {
+			NMSettingConnection *s_con;
+
+			s_con = (NMSettingConnection *) nm_connection_get_setting (existing, NM_TYPE_SETTING_CONNECTION);
+			nm_log_dbg (LOGD_DEVICE, "(%s): found existing device connection '%s'",
+			            nm_device_get_iface (device),
+			            nm_setting_connection_get_id (s_con));
+		}
 	}
 
 	/* Start the device if it's supposed to be managed */
 	unmanaged_specs = nm_sysconfig_settings_get_unmanaged_specs (priv->sys_settings);
-	if (   !priv->sleeping
+	if (   !manager_sleeping (self)
 	    && !nm_device_interface_spec_match_list (NM_DEVICE_INTERFACE (device), unmanaged_specs)) {
 		nm_device_set_managed (device,
 		                       TRUE,
@@ -1534,15 +1584,18 @@ add_device (NMManager *self, NMDevice *device)
 		const char *ac_path;
 		GError *error = NULL;
 
+		nm_log_dbg (LOGD_DEVICE, "(%s): will attempt to assume existing connection",
+		            nm_device_get_iface (device));
+
 		ac_path = internal_activate_device (self, device, existing, NULL, FALSE, TRUE, &error);
 		if (ac_path)
 			g_object_notify (G_OBJECT (self), NM_MANAGER_ACTIVE_CONNECTIONS);
 		else {
-			nm_warning ("Assumed connection (%d) %s failed to activate: (%d) %s",
-			            nm_connection_get_scope (existing),
-			            nm_connection_get_path (existing),
-			            error ? error->code : -1,
-			            error && error->message ? error->message : "(unknown)");
+			nm_log_warn (LOGD_DEVICE, "assumed connection (%d) %s failed to activate: (%d) %s",
+			             nm_connection_get_scope (existing),
+			             nm_connection_get_path (existing),
+			             error ? error->code : -1,
+			             error && error->message ? error->message : "(unknown)");
 			g_error_free (error);
 		}
 	}
@@ -1691,13 +1744,12 @@ bluez_manager_bdaddr_added_cb (NMBluezManager *bluez_mgr,
 
 	device = nm_device_bt_new (object_path, bdaddr, name, capabilities, FALSE);
 	if (device) {
-		g_message ("%s: BT device %s (%s) added (%s%s%s)",
-		           __func__,
-		           name,
-		           bdaddr,
-		           has_dun ? "DUN" : "",
-		           has_dun && has_nap ? " " : "",
-		           has_nap ? "NAP" : "");
+		nm_log_info (LOGD_HW, "BT device %s (%s) added (%s%s%s)",
+		             name,
+		             bdaddr,
+		             has_dun ? "DUN" : "",
+		             has_dun && has_nap ? " " : "",
+		             has_nap ? "NAP" : "");
 
 		add_device (manager, device);
 	}
@@ -1716,7 +1768,7 @@ bluez_manager_bdaddr_removed_cb (NMBluezManager *bluez_mgr,
 	g_return_if_fail (bdaddr != NULL);
 	g_return_if_fail (object_path != NULL);
 
-	g_message ("%s: BT device %s removed", __func__, bdaddr);
+	nm_log_info (LOGD_HW, "BT device %s removed", bdaddr);
 
 	for (iter = priv->devices; iter; iter = iter->next) {
 		NMDevice *device = NM_DEVICE (iter->data);
@@ -1733,12 +1785,14 @@ find_device_by_iface (NMManager *self, const gchar *iface)
 {
 	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (self);
 	GSList *iter;
+
 	for (iter = priv->devices; iter; iter = g_slist_next (iter)) {
 		NMDevice *device = NM_DEVICE (iter->data);
 		const gchar *d_iface = nm_device_get_ip_iface (device);
 		if (!strcmp (d_iface, iface))
 			return device;
 	}
+
 	return NULL;
 }
 
@@ -1749,20 +1803,11 @@ find_device_by_ifindex (NMManager *self, guint32 ifindex)
 	GSList *iter;
 
 	for (iter = priv->devices; iter; iter = g_slist_next (iter)) {
-		NMDevice *device = NM_DEVICE (iter->data);
-		gint candidate_idx = 0;
+		NMDevice *candidate = NM_DEVICE (iter->data);
 
-		if (NM_IS_DEVICE_ETHERNET (device))
-			candidate_idx = nm_device_ethernet_get_ifindex (NM_DEVICE_ETHERNET (device));
-		else if (NM_IS_DEVICE_WIFI (device))
-			candidate_idx = nm_device_wifi_get_ifindex (NM_DEVICE_WIFI (device));
-		else if (NM_IS_DEVICE_OLPC_MESH (device))
-			candidate_idx = nm_device_olpc_mesh_get_ifindex (NM_DEVICE_OLPC_MESH (device));
-
-		if (candidate_idx == ifindex)
-			return device;
+		if (ifindex == nm_device_get_ifindex (candidate))
+			return candidate;
 	}
-
 	return NULL;
 }
 
@@ -1773,7 +1818,6 @@ udev_device_added_cb (NMUdevManager *udev_mgr,
                       gpointer user_data)
 {
 	NMManager *self = NM_MANAGER (user_data);
-	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (self);
 	GObject *device;
 	guint32 ifindex;
 
@@ -1781,7 +1825,7 @@ udev_device_added_cb (NMUdevManager *udev_mgr,
 	if (find_device_by_ifindex (self, ifindex))
 		return;
 
-	device = creator_fn (udev_mgr, udev_device, priv->sleeping);
+	device = creator_fn (udev_mgr, udev_device, manager_sleeping (self));
 	if (device)
 		add_device (self, NM_DEVICE (device));
 }
@@ -1989,7 +2033,7 @@ user_get_secrets (NMManager *self,
 	                                         nm_connection_get_path (connection),
 	                                         NM_DBUS_IFACE_SETTINGS_CONNECTION_SECRETS);
 	if (!info->proxy) {
-		nm_warning ("%s: could not create user connection secrets proxy", __func__);
+		nm_log_warn (LOGD_USER_SET, "could not create user connection secrets proxy");
 		g_free (info);
 		return NULL;
 	}
@@ -2054,7 +2098,9 @@ system_get_secrets_idle_cb (gpointer user_data)
 	connection = nm_settings_interface_get_connection_by_path (NM_SETTINGS_INTERFACE (priv->sys_settings), 
 	                                                           info->connection_path);
 	if (!connection) {
-		error = g_error_new_literal (0, 0, "unknown connection (not exported by system settings)");
+		error = g_error_new_literal (NM_MANAGER_ERROR,
+		                             NM_MANAGER_ERROR_UNKNOWN_CONNECTION,
+		                             "unknown connection (not exported by system settings)");
 		nm_secrets_provider_interface_get_secrets_result (info->provider,
 		                                                  info->setting_name,
 		                                                  info->caller,
@@ -2204,8 +2250,8 @@ wait_for_connection_expired (gpointer data)
 	g_set_error (&error,
 	             NM_MANAGER_ERROR, NM_MANAGER_ERROR_UNKNOWN_CONNECTION,
 	             "%s", "Connection was not provided by any settings service");
-	nm_warning ("Connection (%d) %s failed to activate (timeout): (%d) %s",
-	            info->scope, info->connection_path, error->code, error->message);
+	nm_log_warn (LOGD_CORE, "connection (%d) %s failed to activate (timeout): (%d) %s",
+	             info->scope, info->connection_path, error->code, error->message);
 	dbus_g_method_return_error (info->context, error);
 	g_error_free (error);
 
@@ -2356,8 +2402,8 @@ connection_added_default_handler (NMManager *manager,
 		g_object_notify (G_OBJECT (manager), NM_MANAGER_ACTIVE_CONNECTIONS);
 	} else {
 		dbus_g_method_return_error (info->context, error);
-		nm_warning ("Connection (%d) %s failed to activate: (%d) %s",
-		            scope, info->connection_path, error->code, error->message);
+		nm_log_warn (LOGD_CORE, "connection (%d) %s failed to activate: (%d) %s",
+		             scope, info->connection_path, error->code, error->message);
 		g_error_free (error);
 	}
 
@@ -2540,8 +2586,8 @@ impl_manager_activate_connection (NMManager *manager,
  err:
 	if (error) {
 		dbus_g_method_return_error (context, error);
-		nm_warning ("Connection (%d) %s failed to activate: (%d) %s",
-		            scope, connection_path, error->code, error->message);
+		nm_log_warn (LOGD_CORE, "connection (%d) %s failed to activate: (%d) %s",
+		             scope, connection_path, error->code, error->message);
 		g_error_free (error);
 	}
 
@@ -2607,54 +2653,25 @@ impl_manager_deactivate_connection (NMManager *manager,
 	                                         error);
 }
 
-static gboolean
-impl_manager_sleep (NMManager *self, gboolean sleep, GError **error)
+static void
+do_sleep_wake (NMManager *self)
 {
-	NMManagerPrivate *priv;
+	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (self);
+	const GSList *unmanaged_specs;
 	GSList *iter;
 
-	g_return_val_if_fail (NM_IS_MANAGER (self), FALSE);
-
-	priv = NM_MANAGER_GET_PRIVATE (self);
-
-	if (priv->sleeping == sleep) {
-		g_set_error (error,
-		             NM_MANAGER_ERROR, NM_MANAGER_ERROR_ALREADY_ASLEEP_OR_AWAKE,
-		             "Already %s", sleep ? "asleep" : "awake");		
-		return FALSE;
-	}
-
-	priv->sleeping = sleep;
-
-	/* Update "NetworkingEnabled" key in state file */
-	if (priv->state_file) {
-		GError *err = NULL;
-		gboolean networking_enabled = !sleep;
-
-		if (!write_value_to_state_file (priv->state_file,
-		                                "main", "NetworkingEnabled",
-		                                G_TYPE_BOOLEAN, (gpointer) &networking_enabled,
-		                                &err)) {
-			g_warning ("Writing to state file %s failed: (%d) %s.",
-			           priv->state_file,
-			           err ? err->code : -1,
-			           (err && err->message) ? err->message : "unknown");
-		}
-
-	}
-
-	if (sleep) {
-		nm_info ("Sleeping...");
+	if (manager_sleeping (self)) {
+		nm_log_info (LOGD_SUSPEND, "sleeping or disabling...");
 
 		/* Just deactivate and down all devices from the device list,
-		 * we'll remove them in 'wake' for speed's sake.
+		 * to keep things fast the device list will get resynced when
+		 * the manager wakes up.
 		 */
 		for (iter = priv->devices; iter; iter = iter->next)
 			nm_device_set_managed (NM_DEVICE (iter->data), FALSE, NM_DEVICE_STATE_REASON_SLEEPING);
-	} else {
-		const GSList *unmanaged_specs;
 
-		nm_info  ("Waking up...");
+	} else {
+		nm_log_info (LOGD_SUSPEND, "waking up and re-enabling...");
 
 		unmanaged_specs = nm_sysconfig_settings_get_unmanaged_specs (priv->sys_settings);
 
@@ -2674,11 +2691,17 @@ impl_manager_sleep (NMManager *self, gboolean sleep, GError **error)
 			for (i = 0; i < RFKILL_TYPE_MAX; i++) {
 				RadioState *rstate = &priv->radio_states[i];
 				gboolean enabled = (rstate->hw_enabled && rstate->enabled);
+				RfKillType devtype = RFKILL_TYPE_UNKNOWN;
 
-				if (   rstate->object_filter_func
-				    && rstate->object_filter_func (G_OBJECT (device))) {
-					nm_device_interface_set_enabled (NM_DEVICE_INTERFACE (device), enabled);
+				if (rstate->desc) {
+					nm_log_dbg (LOGD_RFKILL, "%s %s devices (hw_enabled %d, enabled %d)",
+					            enabled ? "enabling" : "disabling",
+					            rstate->desc, rstate->hw_enabled, rstate->enabled);
 				}
+
+				g_object_get (G_OBJECT (device), NM_DEVICE_INTERFACE_RFKILL_TYPE, &devtype, NULL);
+				if (devtype == rstate->rtype)
+					nm_device_interface_set_enabled (NM_DEVICE_INTERFACE (device), enabled);
 			}
 
 			nm_device_clear_autoconnect_inhibit (device);
@@ -2693,8 +2716,79 @@ impl_manager_sleep (NMManager *self, gboolean sleep, GError **error)
 	}
 
 	nm_manager_update_state (self);
+}
+
+static gboolean
+impl_manager_sleep (NMManager *self, gboolean do_sleep, GError **error)
+{
+	NMManagerPrivate *priv;
+
+	g_return_val_if_fail (NM_IS_MANAGER (self), FALSE);
+
+	priv = NM_MANAGER_GET_PRIVATE (self);
+
+	if (priv->sleeping == do_sleep) {
+		g_set_error (error,
+		             NM_MANAGER_ERROR, NM_MANAGER_ERROR_ALREADY_ASLEEP_OR_AWAKE,
+		             "Already %s", do_sleep ? "asleep" : "awake");
+		return FALSE;
+	}
+
+	nm_log_info (LOGD_SUSPEND, "%s requested (sleeping: %s  enabled: %s)",
+	             do_sleep ? "sleep" : "wake",
+	             priv->sleeping ? "yes" : "no",
+	             priv->net_enabled ? "yes" : "no");
+
+	priv->sleeping = do_sleep;
+
+	do_sleep_wake (self);
 
 	g_object_notify (G_OBJECT (self), NM_MANAGER_SLEEPING);
+	return TRUE;
+}
+
+static gboolean
+impl_manager_enable (NMManager *self, gboolean enable, GError **error)
+{
+	NMManagerPrivate *priv;
+
+	g_return_val_if_fail (NM_IS_MANAGER (self), FALSE);
+
+	priv = NM_MANAGER_GET_PRIVATE (self);
+
+	if (priv->net_enabled == enable) {
+		g_set_error (error,
+		             NM_MANAGER_ERROR, NM_MANAGER_ERROR_ALREADY_ENABLED_OR_DISABLED,
+		             "Already %s", enable ? "enabled" : "disabled");
+		return FALSE;
+	}
+
+	/* Update "NetworkingEnabled" key in state file */
+	if (priv->state_file) {
+		GError *err = NULL;
+
+		if (!write_value_to_state_file (priv->state_file,
+		                                "main", "NetworkingEnabled",
+		                                G_TYPE_BOOLEAN, (gpointer) &enable,
+		                                &err)) {
+			/* Not a hard error */
+			nm_log_warn (LOGD_SUSPEND, "writing to state file %s failed: (%d) %s.",
+			             priv->state_file,
+			             err ? err->code : -1,
+			             (err && err->message) ? err->message : "unknown");
+		}
+	}
+
+	nm_log_info (LOGD_SUSPEND, "%s requested (sleeping: %s  enabled: %s)",
+	             enable ? "enable" : "disable",
+	             priv->sleeping ? "yes" : "no",
+	             priv->net_enabled ? "yes" : "no");
+
+	priv->net_enabled = enable;
+
+	do_sleep_wake (self);
+
+	g_object_notify (G_OBJECT (self), NM_MANAGER_NETWORKING_ENABLED);
 	return TRUE;
 }
 
@@ -2722,6 +2816,23 @@ impl_manager_legacy_state (NMManager *manager, guint32 *state, GError **err)
 	return TRUE;
 }
 
+static gboolean
+impl_manager_set_logging (NMManager *manager,
+                          const char *level,
+                          const char *domains,
+                          GError **error)
+{
+	if (nm_logging_setup (level, domains, error)) {
+		char *new_domains = nm_logging_domains_to_string ();
+
+		nm_log_info (LOGD_CORE, "logging: level '%s' domains '%s'",
+		             nm_logging_level_to_string (),
+		             new_domains);
+		g_free (new_domains);
+		return TRUE;
+	}
+	return FALSE;
+}
 
 /* Connections */
 
@@ -2777,7 +2888,7 @@ nm_manager_get_connections (NMManager *manager,
 	else if (scope == NM_CONNECTION_SCOPE_SYSTEM)
 		g_hash_table_foreach (priv->system_connections, connections_to_slist, &list);
 	else
-		nm_warning ("Unknown NMConnectionScope %d", scope);	
+		nm_log_err (LOGD_CORE, "unknown NMConnectionScope %d", scope);
 	return list;
 }
 
@@ -2798,7 +2909,7 @@ nm_manager_get_connection_by_object_path (NMManager *manager,
 	else if (scope == NM_CONNECTION_SCOPE_SYSTEM)
 		connection = (NMConnection *) g_hash_table_lookup (priv->system_connections, path);
 	else
-		nm_warning ("Unknown NMConnectionScope %d", scope);
+		nm_log_err (LOGD_CORE, "unknown NMConnectionScope %d", scope);
 	return connection;
 }
 
@@ -2823,32 +2934,34 @@ nm_manager_start (NMManager *self)
 		if (!rstate->desc)
 			continue;
 
-		if (!rstate->ignore_udev) {
-			switch (nm_udev_manager_get_rfkill_state (priv->udev_mgr, i)) {
-			case RFKILL_UNBLOCKED:
-				enabled = TRUE;
-				hw_enabled = TRUE;
-				break;
-			case RFKILL_SOFT_BLOCKED:
-				enabled = FALSE;
-				hw_enabled = TRUE;
-				break;
-			case RFKILL_HARD_BLOCKED:
-				enabled = FALSE;
-				hw_enabled = FALSE;
-				break;
-			default:
-				break;
-			}
+		switch (nm_udev_manager_get_rfkill_state (priv->udev_mgr, i)) {
+		case RFKILL_UNBLOCKED:
+			enabled = TRUE;
+			hw_enabled = TRUE;
+			break;
+		case RFKILL_SOFT_BLOCKED:
+			enabled = FALSE;
+			hw_enabled = TRUE;
+			break;
+		case RFKILL_HARD_BLOCKED:
+			enabled = FALSE;
+			hw_enabled = FALSE;
+			break;
+		default:
+			break;
 		}
 
 		rstate->hw_enabled = hw_enabled;
-		nm_info ("%s %s by radio killswitch; %s by state file",
-		         rstate->desc,
-		         (rstate->hw_enabled && enabled) ? "enabled" : "disabled",
-		         (rstate->enabled) ? "enabled" : "disabled");
+		nm_log_info (LOGD_RFKILL, "%s %s by radio killswitch; %s by state file",
+		             rstate->desc,
+		             (rstate->hw_enabled && enabled) ? "enabled" : "disabled",
+		             (rstate->enabled) ? "enabled" : "disabled");
 		manager_set_radio_enabled (self, rstate, rstate->enabled && enabled);
 	}
+
+	/* Log overall networking status - enabled/disabled */
+	nm_log_info (LOGD_CORE, "Networking is %s by state file",
+	             priv->net_enabled ? "enabled" : "disabled");
 
 	system_unmanaged_devices_changed_cb (priv->sys_settings, NULL, self);
 	system_hostname_changed_cb (priv->sys_settings, NULL, self);
@@ -2900,7 +3013,7 @@ nm_manager_get (const char *config_file,
 
 	priv->state_file = g_strdup (state_file);
 
-	priv->sleeping = !initial_net_enabled;
+	priv->net_enabled = initial_net_enabled;
 
 	priv->radio_states[RFKILL_TYPE_WLAN].enabled = initial_wifi_enabled;
 	priv->radio_states[RFKILL_TYPE_WWAN].enabled = initial_wwan_enabled;
@@ -3024,6 +3137,10 @@ set_property (GObject *object, guint prop_id,
 	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (self);
 
 	switch (prop_id) {
+	case PROP_NETWORKING_ENABLED:
+		/* Construct only for now */
+		priv->net_enabled = g_value_get_boolean (value);
+		break;
 	case PROP_WIRELESS_ENABLED:
 		manager_set_radio_enabled (NM_MANAGER (object),
 		                           &priv->radio_states[RFKILL_TYPE_WLAN],
@@ -3051,6 +3168,9 @@ get_property (GObject *object, guint prop_id,
 	case PROP_STATE:
 		nm_manager_update_state (self);
 		g_value_set_uint (value, priv->state);
+		break;
+	case PROP_NETWORKING_ENABLED:
+		g_value_set_boolean (value, priv->net_enabled);
 		break;
 	case PROP_WIRELESS_ENABLED:
 		g_value_set_boolean (value, priv->radio_states[RFKILL_TYPE_WLAN].enabled);
@@ -3095,7 +3215,7 @@ nm_manager_init (NMManager *manager)
 	priv->radio_states[RFKILL_TYPE_WLAN].hw_prop = NM_MANAGER_WIRELESS_HARDWARE_ENABLED;
 	priv->radio_states[RFKILL_TYPE_WLAN].desc = "WiFi";
 	priv->radio_states[RFKILL_TYPE_WLAN].other_enabled_func = nm_manager_get_ipw_rfkill_state;
-	priv->radio_states[RFKILL_TYPE_WLAN].object_filter_func = rfkill_wlan_filter;
+	priv->radio_states[RFKILL_TYPE_WLAN].rtype = RFKILL_TYPE_WLAN;
 
 	priv->radio_states[RFKILL_TYPE_WWAN].enabled = TRUE;
 	priv->radio_states[RFKILL_TYPE_WWAN].key = "WWANEnabled";
@@ -3103,7 +3223,15 @@ nm_manager_init (NMManager *manager)
 	priv->radio_states[RFKILL_TYPE_WWAN].hw_prop = NM_MANAGER_WWAN_HARDWARE_ENABLED;
 	priv->radio_states[RFKILL_TYPE_WWAN].desc = "WWAN";
 	priv->radio_states[RFKILL_TYPE_WWAN].other_enabled_func = nm_manager_get_modem_enabled_state;
-	priv->radio_states[RFKILL_TYPE_WWAN].object_filter_func = rfkill_wwan_filter;
+	priv->radio_states[RFKILL_TYPE_WWAN].rtype = RFKILL_TYPE_WWAN;
+
+	priv->radio_states[RFKILL_TYPE_WIMAX].enabled = TRUE;
+	priv->radio_states[RFKILL_TYPE_WIMAX].key = "WiMAXEnabled";
+	priv->radio_states[RFKILL_TYPE_WIMAX].prop = NULL;
+	priv->radio_states[RFKILL_TYPE_WIMAX].hw_prop = NULL;
+	priv->radio_states[RFKILL_TYPE_WIMAX].desc = "WiMAX";
+	priv->radio_states[RFKILL_TYPE_WIMAX].other_enabled_func = NULL;
+	priv->radio_states[RFKILL_TYPE_WIMAX].rtype = RFKILL_TYPE_WIMAX;
 
 	for (i = 0; i < RFKILL_TYPE_MAX; i++)
 		priv->radio_states[i].hw_enabled = TRUE;
@@ -3124,9 +3252,9 @@ nm_manager_init (NMManager *manager)
 	                                                  g_object_unref);
 
 	priv->modem_manager = nm_modem_manager_get ();
-	priv->modem_added_id = g_signal_connect (priv->modem_manager, "device-added",
+	priv->modem_added_id = g_signal_connect (priv->modem_manager, "modem-added",
 	                                         G_CALLBACK (modem_added), manager);
-	priv->modem_removed_id = g_signal_connect (priv->modem_manager, "device-removed",
+	priv->modem_removed_id = g_signal_connect (priv->modem_manager, "modem-removed",
 	                                           G_CALLBACK (modem_removed), manager);
 
 	priv->vpn_manager = nm_vpn_manager_get ();
@@ -3157,7 +3285,7 @@ nm_manager_init (NMManager *manager)
 		                             manager,
 		                             NULL);
 	} else
-		nm_warning ("%s: could not initialize avahi-autoipd D-Bus proxy", __func__);
+		nm_log_warn (LOGD_AUTOIP4, "could not initialize avahi-autoipd D-Bus proxy");
 }
 
 static void
@@ -3182,6 +3310,14 @@ nm_manager_class_init (NMManagerClass *manager_class)
 		                    "Current state",
 		                    0, NM_STATE_DISCONNECTED, 0,
 		                    G_PARAM_READABLE));
+
+	g_object_class_install_property
+		(object_class, PROP_NETWORKING_ENABLED,
+		 g_param_spec_boolean (NM_MANAGER_NETWORKING_ENABLED,
+		                       "NetworkingEnabled",
+		                       "Is networking enabled",
+		                       TRUE,
+		                       G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 
 	g_object_class_install_property
 		(object_class, PROP_WIRELESS_ENABLED,
@@ -3232,6 +3368,7 @@ nm_manager_class_init (NMManagerClass *manager_class)
 		                      NULL,
 		                      G_PARAM_READABLE | NM_PROPERTY_PARAM_NO_EXPORT));
 
+	/* Sleeping is not exported over D-Bus */
 	g_object_class_install_property
 		(object_class, PROP_SLEEPING,
 		 g_param_spec_boolean (NM_MANAGER_SLEEPING,
@@ -3321,5 +3458,6 @@ nm_manager_class_init (NMManagerClass *manager_class)
 	                                 &dbus_glib_nm_manager_object_info);
 
 	dbus_g_error_domain_register (NM_MANAGER_ERROR, NULL, NM_TYPE_MANAGER_ERROR);
+	dbus_g_error_domain_register (NM_LOGGING_ERROR, "org.freedesktop.NetworkManager.Logging", NM_TYPE_LOGGING_ERROR);
 }
 

@@ -20,7 +20,32 @@ BUILT_SOURCES = \
 	nm-active-connection-bindings.h \
 	nm-ip4-config-bindings.h \
 	nm-dhcp4-config-bindings.h \
-	nm-ip6-config-bindings.h
+	nm-ip6-config-bindings.h \
+	nm-dhcp6-config-bindings.h
+
+#####################################################
+# Deprecated original libnm_glib bits
+#####################################################
+
+noinst_LTLIBRARIES = libdeprecated-nm-glib.la
+
+libdeprecated_nm_glib_la_SOURCES = \
+	libnm_glib.h \
+	libnm_glib.c
+
+libdeprecated_nm_glib_la_CPPFLAGS = \
+	$(DBUS_CFLAGS) \
+	$(GLIB_CFLAGS) \
+	-Wno-deprecated-declarations \
+	-Wno-deprecated
+
+libdeprecated_nm_glib_la_LIBADD = \
+	$(DBUS_LIBS) \
+	$(GLIB_LIBS)
+
+#####################################################
+# Real libnm-glib stuff
+#####################################################
 
 lib_LTLIBRARIES = libnm-glib.la libnm-glib-vpn.la
 
@@ -52,6 +77,7 @@ libnminclude_HEADERS = \
 	nm-active-connection.h \
 	nm-dhcp4-config.h \
 	nm-ip6-config.h \
+	nm-dhcp6-config.h \
 	nm-remote-connection.h \
 	nm-settings-interface.h \
 	nm-settings-system-interface.h \
@@ -62,7 +88,6 @@ libnminclude_HEADERS = \
 	nm-settings-service.h
 
 libnm_glib_la_SOURCES = \
-	libnm_glib.c \
 	nm-object.c \
 	nm-object-private.h \
 	nm-client.c \
@@ -86,6 +111,7 @@ libnm_glib_la_SOURCES = \
 	nm-active-connection.c \
 	nm-dhcp4-config.c \
 	nm-ip6-config.c \
+	nm-dhcp6-config.c \
 	nm-remote-connection.c \
 	nm-remote-connection-private.h \
 	nm-settings-interface.c \
@@ -99,13 +125,14 @@ libnm_glib_la_SOURCES = \
 libnm_glib_la_LIBADD = \
 	$(top_builddir)/libnm-util/libnm-util.la \
 	$(top_builddir)/marshallers/libmarshallers.la \
+	$(builddir)/libdeprecated-nm-glib.la \
 	$(GLIB_LIBS) \
 	$(DBUS_LIBS) \
 	$(GCONF_LIBS) \
 	$(GUDEV_LIBS)
 
 libnm_glib_la_LDFLAGS = -Wl,--version-script=$(srcdir)/libnm-glib.ver \
-	-version-info "4:0:2"
+	-version-info "4:2:2"
 
 noinst_PROGRAMS = libnm-glib-test
 
@@ -172,6 +199,9 @@ nm-dhcp4-config-bindings.h: $(top_srcdir)/introspection/nm-dhcp4-config.xml
 nm-ip6-config-bindings.h: $(top_srcdir)/introspection/nm-ip6-config.xml
 	dbus-binding-tool --prefix=nm_ip6_config --mode=glib-client --output=$@ $<
 
+nm-dhcp6-config-bindings.h: $(top_srcdir)/introspection/nm-dhcp6-config.xml
+	dbus-binding-tool --prefix=nm_dhcp6_config --mode=glib-client --output=$@ $<
+
 pkgconfigdir = $(libdir)/pkgconfig
 pkgconfig_DATA = libnm-glib.pc libnm-glib-vpn.pc
 
@@ -179,5 +209,4 @@ DISTCLEANFILES = libnm-glib.pc libnm-glib.pc
 
 EXTRA_DIST = libnm-glib.pc.in libnm-glib-vpn.pc.in libnm-glib.ver libnm-glib-vpn.ver
 
-CLEANFILES = \
-	$(BUILT_SOURCES)
+CLEANFILES = $(BUILT_SOURCES)

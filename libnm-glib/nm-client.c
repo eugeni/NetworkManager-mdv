@@ -18,7 +18,7 @@
  * Boston, MA 02110-1301 USA.
  *
  * Copyright (C) 2007 - 2008 Novell, Inc.
- * Copyright (C) 2007 - 2008 Red Hat, Inc.
+ * Copyright (C) 2007 - 2010 Red Hat, Inc.
  */
 
 #include <dbus/dbus-glib.h>
@@ -58,6 +58,8 @@ typedef struct {
 	GPtrArray *devices;
 	GPtrArray *active_connections;
 
+	gboolean have_networking_enabled;
+	gboolean networking_enabled;
 	gboolean wireless_enabled;
 	gboolean wireless_hw_enabled;
 
@@ -69,6 +71,7 @@ enum {
 	PROP_0,
 	PROP_STATE,
 	PROP_MANAGER_RUNNING,
+	PROP_NETWORKING_ENABLED,
 	PROP_WIRELESS_ENABLED,
 	PROP_WIRELESS_HARDWARE_ENABLED,
 	PROP_WWAN_ENABLED,
@@ -97,11 +100,28 @@ static void client_device_added_proxy (DBusGProxy *proxy, char *path, gpointer u
 static void client_device_removed_proxy (DBusGProxy *proxy, char *path, gpointer user_data);
 
 static void
+handle_net_enabled_changed (GObject *object,
+                            GParamSpec *pspec,
+                            GValue *value,
+                            gpointer user_data)
+{
+	NMClientPrivate *priv = NM_CLIENT_GET_PRIVATE (object);
+
+	/* Update the cache flag when it changes */
+	priv->have_networking_enabled = TRUE;
+}
+
+static void
 nm_client_init (NMClient *client)
 {
 	NMClientPrivate *priv = NM_CLIENT_GET_PRIVATE (client);
 
 	priv->state = NM_STATE_UNKNOWN;
+
+	g_signal_connect (client,
+	                  "notify::" NM_CLIENT_NETWORKING_ENABLED,
+	                  G_CALLBACK (handle_net_enabled_changed),
+	                  client);
 }
 
 static void
@@ -250,6 +270,7 @@ register_for_property_changed (NMClient *client)
 	NMClientPrivate *priv = NM_CLIENT_GET_PRIVATE (client);
 	const NMPropertiesChangedInfo property_changed_info[] = {
 		{ NM_CLIENT_STATE,                     _nm_object_demarshal_generic,  &priv->state },
+		{ NM_CLIENT_NETWORKING_ENABLED,        _nm_object_demarshal_generic,  &priv->networking_enabled },
 		{ NM_CLIENT_WIRELESS_ENABLED,          _nm_object_demarshal_generic,  &priv->wireless_enabled },
 		{ NM_CLIENT_WIRELESS_HARDWARE_ENABLED, _nm_object_demarshal_generic,  &priv->wireless_hw_enabled },
 		{ NM_CLIENT_WWAN_ENABLED,              _nm_object_demarshal_generic,  &priv->wwan_enabled },
@@ -427,6 +448,9 @@ get_property (GObject *object,
 	case PROP_MANAGER_RUNNING:
 		g_value_set_boolean (value, priv->manager_running);
 		break;
+	case PROP_NETWORKING_ENABLED:
+		g_value_set_boolean (value, priv->networking_enabled);
+		break;
 	case PROP_WIRELESS_ENABLED:
 		g_value_set_boolean (value, priv->wireless_enabled);
 		break;
@@ -488,6 +512,19 @@ nm_client_class_init (NMClientClass *client_class)
 						       "Whether NetworkManager is running",
 						       FALSE,
 						       G_PARAM_READABLE));
+
+	/**
+	 * NMClient::networking-enabled:
+	 *
+	 * Whether networking is enabled.
+	 **/
+	g_object_class_install_property
+		(object_class, PROP_NETWORKING_ENABLED,
+		 g_param_spec_boolean (NM_CLIENT_NETWORKING_ENABLED,
+						   "NetworkingEnabled",
+						   "Is networking enabled",
+						   TRUE,
+						   G_PARAM_READABLE));
 
 	/**
 	 * NMClient::wireless-enabled:
@@ -1042,24 +1079,67 @@ nm_client_get_state (NMClient *client)
 }
 
 /**
- * nm_client_sleep:
+ * nm_client_networking_get_enabled:
  * @client: a #NMClient
- * @sleep: %TRUE to put the daemon to sleep
  *
- * Enables or disables networking. When the daemon is put to sleep, it'll deactivate and disable
- * all the active devices.
+ * Whether networking is enabled or disabled.
+ *
+ * Returns: %TRUE if networking is disabled, %FALSE if networking is enabled
+ **/
+gboolean
+nm_client_networking_get_enabled (NMClient *client)
+{
+	NMClientPrivate *priv;
+
+	g_return_val_if_fail (NM_IS_CLIENT (client), FALSE);
+
+	priv = NM_CLIENT_GET_PRIVATE (client);
+	if (!priv->have_networking_enabled) {
+		priv = NM_CLIENT_GET_PRIVATE (client);
+		if (!priv->networking_enabled) {
+			priv->networking_enabled = _nm_object_get_boolean_property (NM_OBJECT (client),
+			                                                            NM_DBUS_INTERFACE,
+			                                                            "NetworkingEnabled");
+			priv->have_networking_enabled = TRUE;
+		}
+	}
+
+	return priv->networking_enabled;
+}
+
+/**
+ * nm_client_networking_set_enabled:
+ * @client: a #NMClient
+ * @enabled: %TRUE to set networking enabled, %FALSE to set networking disabled
+ *
+ * Enables or disables networking.  When networking is disabled, all controlled
+ * interfaces are disconnected and deactivated.  When networking is enabled,
+ * all controlled interfaces are available for activation.
  **/
 void
-nm_client_sleep (NMClient *client, gboolean sleep)
+nm_client_networking_set_enabled (NMClient *client, gboolean enable)
 {
 	GError *err = NULL;
 
 	g_return_if_fail (NM_IS_CLIENT (client));
 
-	if (!org_freedesktop_NetworkManager_sleep (NM_CLIENT_GET_PRIVATE (client)->client_proxy, sleep, &err)) {
-		g_warning ("Error in sleep: %s", err->message);
+	if (!org_freedesktop_NetworkManager_enable (NM_CLIENT_GET_PRIVATE (client)->client_proxy, enable, &err)) {
+		g_warning ("Error enabling/disabling networking: %s", err->message);
 		g_error_free (err);
 	}
+}
+
+/**
+ * nm_client_sleep:
+ * @client: a #NMClient
+ * @sleep: %TRUE to put the daemon to sleep
+ *
+ * Deprecated; use nm_client_networking_set_enabled() instead.
+ **/
+void
+nm_client_sleep (NMClient *client, gboolean sleep)
+{
+	nm_client_networking_set_enabled (client, !sleep);
 }
 
 /**
