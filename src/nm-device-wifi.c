@@ -824,6 +824,11 @@ get_active_ap (NMDeviceWifi *self,
 	const GByteArray *ssid;
 	GSList *iter;
 	int i = 0;
+	NMAccessPoint *match_nofreq = NULL;
+	gboolean found_a_band = FALSE;
+	gboolean found_bg_band = FALSE;
+	NM80211Mode devmode;
+	guint32 devfreq;
 
 	nm_device_wifi_get_bssid (self, &bssid);
 	nm_log_dbg (LOGD_WIFI, "(%s): active BSSID: %02x:%02x:%02x:%02x:%02x:%02x",
@@ -842,6 +847,9 @@ get_active_ap (NMDeviceWifi *self,
 	            ssid ? nm_utils_escape_ssid (ssid->data, ssid->len) : "(none)",
 	            ssid ? "'" : "");
 
+	devmode = nm_device_wifi_get_mode (self);
+	devfreq = nm_device_wifi_get_frequency (self);
+
 	/* When matching hidden APs, do a second pass that ignores the SSID check,
 	 * because NM might not yet know the SSID of the hidden AP in the scan list
 	 * and therefore it won't get matched the first time around.
@@ -854,8 +862,8 @@ get_active_ap (NMDeviceWifi *self,
 			NMAccessPoint *ap = NM_AP (iter->data);
 			const struct ether_addr	*ap_bssid = nm_ap_get_address (ap);
 			const GByteArray *ap_ssid = nm_ap_get_ssid (ap);
-			NM80211Mode devmode, apmode;
-			guint32 devfreq, apfreq;
+			NM80211Mode apmode;
+			guint32 apfreq;
 
 			nm_log_dbg (LOGD_WIFI, "    AP: %s%s%s  %02x:%02x:%02x:%02x:%02x:%02x",
 			            ap_ssid ? "'" : "",
@@ -880,7 +888,6 @@ get_active_ap (NMDeviceWifi *self,
 				continue;
 			}
 
-			devmode = nm_device_wifi_get_mode (self);
 			apmode = nm_ap_get_mode (ap);
 			if (devmode != apmode) {
 				nm_log_dbg (LOGD_WIFI, "      mode mismatch (device %d, ap %d)",
@@ -888,11 +895,18 @@ get_active_ap (NMDeviceWifi *self,
 				continue;
 			}
 
-			devfreq = nm_device_wifi_get_frequency (self);
 			apfreq = nm_ap_get_freq (ap);
 			if (devfreq != apfreq) {
 				nm_log_dbg (LOGD_WIFI, "      frequency mismatch (device %u, ap %u)",
 				            devfreq, apfreq);
+
+				if (match_nofreq == NULL)
+					match_nofreq = ap;
+
+				if (apfreq > 4000)
+					found_a_band = TRUE;
+				else if (apfreq > 2000)
+					found_bg_band = TRUE;
 				continue;
 			}
 
@@ -900,6 +914,32 @@ get_active_ap (NMDeviceWifi *self,
 			nm_log_dbg (LOGD_WIFI, "      matched");
 			return ap;
 		}
+	}
+
+	/* Some proprietary drivers (wl.o) report tuned frequency (like when
+	 * scanning) instead of the associated AP's frequency.  This is a great
+	 * example of how WEXT is underspecified.  We use frequency to find the
+	 * active AP in the scan list because some configurations use the same
+	 * SSID/BSSID on the 2GHz and 5GHz bands simultaneously, and we need to
+	 * make sure we get the right AP in the right band.  This configuration
+	 * is uncommon though, and the frequency check penalizes closed drivers we
+	 * can't fix.  Because we're not total dicks, ignore the frequency condition
+	 * if the associated BSSID/SSID exists only in one band since that's most
+	 * likely the AP we want.
+	 */
+	if (match_nofreq && (found_a_band != found_bg_band)) {
+		const struct ether_addr	*ap_bssid = nm_ap_get_address (match_nofreq);
+		const GByteArray *ap_ssid = nm_ap_get_ssid (match_nofreq);
+
+		nm_log_dbg (LOGD_WIFI, "    matched %s%s%s  %02x:%02x:%02x:%02x:%02x:%02x",
+		            ap_ssid ? "'" : "",
+		            ap_ssid ? nm_utils_escape_ssid (ap_ssid->data, ap_ssid->len) : "(none)",
+		            ap_ssid ? "'" : "",
+		            ap_bssid->ether_addr_octet[0], ap_bssid->ether_addr_octet[1],
+		            ap_bssid->ether_addr_octet[2], ap_bssid->ether_addr_octet[3],
+		            ap_bssid->ether_addr_octet[4], ap_bssid->ether_addr_octet[5]);
+
+		return match_nofreq;
 	}
 
 	nm_log_dbg (LOGD_WIFI, "  No matching AP found.");
@@ -1740,19 +1780,31 @@ scanning_allowed (NMDeviceWifi *self)
 	    || nm_supplicant_interface_get_scanning (priv->supplicant.iface))
 		return FALSE;
 
-	/* Don't scan when a shared connection is active; it makes drivers mad */
 	req = nm_device_get_act_request (NM_DEVICE (self));
 	if (req) {
 		NMConnection *connection;
 		NMSettingIP4Config *s_ip4;
+		NMSettingWireless *s_wifi;
 		const char *ip4_method = NULL;
+		const GByteArray *bssid;
 
+		/* Don't scan when a shared connection is active; it makes drivers mad */
 		connection = nm_act_request_get_connection (req);
 		s_ip4 = (NMSettingIP4Config *) nm_connection_get_setting (connection, NM_TYPE_SETTING_IP4_CONFIG);
 		if (s_ip4)
 			ip4_method = nm_setting_ip4_config_get_method (s_ip4);
 
 		if (s_ip4 && !strcmp (ip4_method, NM_SETTING_IP4_CONFIG_METHOD_SHARED))
+			return FALSE;
+
+		/* Don't scan when the connection is locked to a specifc AP, since
+		 * intra-ESS roaming (which requires periodic scanning) isn't being
+		 * used due to the specific AP lock. (bgo #513820)
+		 */
+		s_wifi = (NMSettingWireless *) nm_connection_get_setting (connection, NM_TYPE_SETTING_WIRELESS);
+		g_assert (s_wifi);
+		bssid = nm_setting_wireless_get_bssid (s_wifi);
+		if (bssid && bssid->len == ETH_ALEN)
 			return FALSE;
 	}
 

@@ -44,9 +44,7 @@ G_DEFINE_TYPE (NMDHCPDhclient, nm_dhcp_dhclient, NM_TYPE_DHCP_CLIENT)
 
 #define NM_DHCP_DHCLIENT_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), NM_TYPE_DHCP_DHCLIENT, NMDHCPDhclientPrivate))
 
-#if defined(TARGET_DEBIAN)
-#define NM_DHCLIENT_LEASE_DIR           LOCALSTATEDIR "/lib/dhcp3"
-#elif defined(TARGET_SUSE) || defined(TARGET_MANDRIVA)
+#if defined(TARGET_DEBIAN) || defined(TARGET_SUSE) || defined(TARGET_MANDRIVA)
 #define NM_DHCLIENT_LEASE_DIR           LOCALSTATEDIR "/lib/dhcp"
 #else
 #define NM_DHCLIENT_LEASE_DIR           LOCALSTATEDIR "/lib/dhclient"
@@ -437,9 +435,7 @@ create_dhclient_config (const char *iface,
 
 #if defined(TARGET_SUSE)
 	orig = g_strdup (SYSCONFDIR "/dhclient.conf");
-#elif defined(TARGET_DEBIAN)
-	orig = g_strdup (SYSCONFDIR "/dhcp3/dhclient.conf");
-#elif defined(TARGET_GENTOO)
+#elif defined(TARGET_DEBIAN) || defined(TARGET_GENTOO)
 	orig = g_strdup (SYSCONFDIR "/dhcp/dhclient.conf");
 #else
 	orig = g_strdup_printf (SYSCONFDIR "/dhclient-%s.conf", iface);
@@ -449,6 +445,18 @@ create_dhclient_config (const char *iface,
 		nm_log_warn (LOGD_DHCP, "(%s): not enough memory for dhclient options.", iface);
 		return FALSE;
 	}
+
+#if !defined(TARGET_SUSE) && !defined(TARGET_DEBIAN) && !defined(TARGET_GENTOO)
+	/* Try /etc/dhcp/ too (rh #607759) */
+	if (!g_file_test (orig, G_FILE_TEST_EXISTS)) {
+		g_free (orig);
+		orig = g_strdup_printf (SYSCONFDIR "/dhcp/dhclient-%s.conf", iface);
+		if (!orig) {
+			nm_log_warn (LOGD_DHCP, "(%s): not enough memory for dhclient options.", iface);
+			return FALSE;
+		}
+	}
+#endif
 
 	tmp = g_strdup_printf ("nm-dhclient-%s.conf", iface);
 	conf_file = g_build_filename ("/var", "run", tmp, NULL);
