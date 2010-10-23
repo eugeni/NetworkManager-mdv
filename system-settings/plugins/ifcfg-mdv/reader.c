@@ -2167,11 +2167,11 @@ eap_tls_reader (const char *eap_method,
 
 	/* Private key password */
 	privkey_password = ifcfg_mdv_wpa_network_get_str(wpan,
-	                               phase2 ? "private_key2_password": "private_key_password");
+	                               phase2 ? "private_key2_passwd": "private_key_passwd");
 	if (!privkey_password) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 		             "Missing %s for EAP method '%s'.",
-		             phase2 ? "private_key2_password" : "private_key_password",
+		             phase2 ? "private_key2_passwd" : "private_key_passwd",
 		             eap_method);
 		goto done;
 	}

@@ -458,9 +458,9 @@ write_8021x_certs (NMSetting8021x *s_8021x,
 	/* Private key password */
 	/* FIXME what about hash:XXX? */
 	if (phase2)
-		ifcfg_mdv_wpa_network_set_str(wpan, "private_key2_password", password);
+		ifcfg_mdv_wpa_network_set_str(wpan, "private_key2_passwd", password);
 	else
-		ifcfg_mdv_wpa_network_set_str(wpan, "private_key_password", password);
+		ifcfg_mdv_wpa_network_set_str(wpan, "private_key_passwd", password);
 
 	/* Client certificate */
 	if (is_pkcs12) {
