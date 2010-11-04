@@ -106,5 +106,9 @@ m4/libtool.m4
 m4/lt*.m4
 
 policy/org.freedesktop.network-manager-settings.system.policy
+policy/org.freedesktop.NetworkManager.policy
+
+data/NetworkManager.service
+data/org.freedesktop.NetworkManager.service
 
 cli/src/nmcli

@@ -19,10 +19,7 @@
  * Copyright (C) 2005 - 2008 Novell, Inc.
  */
 
-#ifdef HAVE_CONFIG_H
-# include <config.h>
-#endif
-
+#include <config.h>
 #include <glib.h>
 #include <dbus/dbus.h>
 #include <dbus/dbus-glib-lowlevel.h>
@@ -44,7 +41,7 @@
 #include "nm-manager.h"
 #include "nm-policy.h"
 #include "nm-system.h"
-#include "nm-named-manager.h"
+#include "nm-dns-manager.h"
 #include "nm-dbus-manager.h"
 #include "nm-supplicant-manager.h"
 #include "nm-dhcp-manager.h"
@@ -303,6 +300,7 @@ static gboolean
 parse_config_file (const char *filename,
                    char **plugins,
                    char **dhcp_client,
+                   char ***dns_plugins,
                    char **log_level,
                    char **log_domains,
                    GError **error)
@@ -325,6 +323,7 @@ parse_config_file (const char *filename,
 		return FALSE;
 
 	*dhcp_client = g_key_file_get_value (config, "main", "dhcp", NULL);
+	*dns_plugins = g_key_file_get_string_list (config, "main", "dns", NULL, NULL);
 
 	*log_level = g_key_file_get_value (config, "logging", "level", NULL);
 	*log_domains = g_key_file_get_value (config, "logging", "domains", NULL);
@@ -445,11 +444,12 @@ main (int argc, char *argv[])
 	char *pidfile = NULL, *state_file = NULL, *dhcp = NULL;
 	char *config = NULL, *plugins = NULL, *conf_plugins = NULL;
 	char *log_level = NULL, *log_domains = NULL;
+	char **dns = NULL;
 	gboolean wifi_enabled = TRUE, net_enabled = TRUE, wwan_enabled = TRUE;
 	gboolean success;
 	NMPolicy *policy = NULL;
 	NMVPNManager *vpn_manager = NULL;
-	NMNamedManager *named_mgr = NULL;
+	NMDnsManager *dns_mgr = NULL;
 	NMDBusManager *dbus_mgr = NULL;
 	NMSupplicantManager *sup_mgr = NULL;
 	NMDHCPManager *dhcp_mgr = NULL;
@@ -518,7 +518,7 @@ main (int argc, char *argv[])
 
 	/* Parse the config file */
 	if (config) {
-		if (!parse_config_file (config, &conf_plugins, &dhcp, &cfg_log_level, &cfg_log_domains, &error)) {
+		if (!parse_config_file (config, &conf_plugins, &dhcp, &dns, &cfg_log_level, &cfg_log_domains, &error)) {
 			fprintf (stderr, "Config file %s invalid: (%d) %s\n",
 			         config,
 			         error ? error->code : -1,
@@ -538,7 +538,7 @@ main (int argc, char *argv[])
 		/* Try deprecated nm-system-settings.conf first */
 		if (g_file_test (NM_OLD_SYSTEM_CONF_FILE, G_FILE_TEST_EXISTS)) {
 			config = g_strdup (NM_OLD_SYSTEM_CONF_FILE);
-			parsed = parse_config_file (config, &conf_plugins, &dhcp, &cfg_log_level, &cfg_log_domains, &error);
+			parsed = parse_config_file (config, &conf_plugins, &dhcp, &dns, &cfg_log_level, &cfg_log_domains, &error);
 			if (!parsed) {
 				fprintf (stderr, "Default config file %s invalid: (%d) %s\n",
 				         config,
@@ -553,7 +553,7 @@ main (int argc, char *argv[])
 		/* Try the preferred NetworkManager.conf last */
 		if (!parsed && g_file_test (NM_DEFAULT_SYSTEM_CONF_FILE, G_FILE_TEST_EXISTS)) {
 			config = g_strdup (NM_DEFAULT_SYSTEM_CONF_FILE);
-			parsed = parse_config_file (config, &conf_plugins, &dhcp, &cfg_log_level, &cfg_log_domains, &error);
+			parsed = parse_config_file (config, &conf_plugins, &dhcp, &dns, &cfg_log_level, &cfg_log_domains, &error);
 			if (!parsed) {
 				fprintf (stderr, "Default config file %s invalid: (%d) %s\n",
 				         config,
@@ -627,6 +627,17 @@ main (int argc, char *argv[])
 		g_thread_init (NULL);
 	dbus_g_thread_init ();
 
+#ifndef HAVE_DBUS_GLIB_DISABLE_LEGACY_PROP_ACCESS
+#error HAVE_DBUS_GLIB_DISABLE_LEGACY_PROP_ACCESS not defined
+#endif
+
+#if HAVE_DBUS_GLIB_DISABLE_LEGACY_PROP_ACCESS
+	/* Ensure that non-exported properties don't leak out, and that the
+	 * introspection 'access' permissions are respected.
+	 */
+	dbus_glib_global_set_disable_legacy_property_access ();
+#endif
+
 	setup_signals ();
 
 	nm_logging_start (become_daemon);
@@ -655,9 +666,9 @@ main (int argc, char *argv[])
 		goto done;
 	}
 
-	named_mgr = nm_named_manager_get ();
-	if (!named_mgr) {
-		nm_log_err (LOGD_CORE, "failed to start the named manager.");
+	dns_mgr = nm_dns_manager_get ((const char **) dns);
+	if (!dns_mgr) {
+		nm_log_err (LOGD_CORE, "failed to start the DNS manager.");
 		goto done;
 	}
 
@@ -725,8 +736,8 @@ done:
 	if (vpn_manager)
 		g_object_unref (vpn_manager);
 
-	if (named_mgr)
-		g_object_unref (named_mgr);
+	if (dns_mgr)
+		g_object_unref (dns_mgr);
 
 	if (dhcp_mgr)
 		g_object_unref (dhcp_mgr);
@@ -748,6 +759,7 @@ done:
 	g_free (config);
 	g_free (plugins);
 	g_free (dhcp);
+	g_strfreev (dns);
 	g_free (log_level);
 	g_free (log_domains);
 	g_free (cfg_log_level);

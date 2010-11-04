@@ -33,6 +33,8 @@
 #define ORIG_TAG ".orig"
 #define REJ_TAG ".rej"
 #define RPMNEW_TAG ".rpmnew"
+#define AUGNEW_TAG ".augnew"
+#define AUGTMP_TAG ".augtmp"
 
 #define IFCFG_DIR SYSCONFDIR"/sysconfig/network-scripts"
 
@@ -41,7 +43,9 @@
 
 #define TYPE_ETHERNET "Ethernet"
 #define TYPE_WIRELESS "Wireless"
+#define TYPE_BRIDGE   "Bridge"
 
+#define IFCFG_PLUGIN_ERROR (ifcfg_plugin_error_quark ())
 GQuark ifcfg_plugin_error_quark (void);
 
 

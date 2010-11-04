@@ -44,7 +44,7 @@
 #include "nm-properties-changed-signal.h"
 #include "nm-dbus-glib-types.h"
 #include "NetworkManagerUtils.h"
-#include "nm-named-manager.h"
+#include "nm-dns-manager.h"
 #include "nm-netlink-monitor.h"
 #include "nm-glib-compat.h"
 
@@ -78,7 +78,7 @@ typedef struct {
 	guint ipconfig_timeout;
 	NMIP4Config *ip4_config;
 	guint32 ip4_internal_gw;
-	char *tundev;
+	char *ip_iface;
 	char *banner;
 
 	struct rtnl_route *gw_route;
@@ -134,7 +134,7 @@ nm_vpn_connection_set_vpn_state (NMVPNConnection *connection,
 	/* Save ip_iface since when the VPN goes down it may get freed
 	 * before we're done with it.
 	 */
-	ip_iface = g_strdup (priv->tundev);
+	ip_iface = g_strdup (priv->ip_iface);
 
 	/* Set the NMActiveConnection state based on VPN state */
 	switch (vpn_state) {
@@ -350,7 +350,7 @@ ip_address_to_string (guint32 numeric)
 static void
 print_vpn_config (NMIP4Config *config,
                   guint32 internal_gw,
-                  const char *tundev,
+                  const char *ip_iface,
                   const char *banner)
 {
 	NMIP4Address *addr;
@@ -364,7 +364,7 @@ print_vpn_config (NMIP4Config *config,
 	nm_log_info (LOGD_VPN, "VPN Gateway: %s", ip_address_to_string (nm_ip4_address_get_gateway (addr)));
 	if (internal_gw)
 		nm_log_info (LOGD_VPN, "Internal Gateway: %s", ip_address_to_string (internal_gw));
-	nm_log_info (LOGD_VPN, "Tunnel Device: %s", tundev);
+	nm_log_info (LOGD_VPN, "Tunnel Device: %s", ip_iface);
 	nm_log_info (LOGD_VPN, "Internal IP4 Address: %s", ip_address_to_string (nm_ip4_address_get_address (addr)));
 	nm_log_info (LOGD_VPN, "Internal IP4 Prefix: %d", nm_ip4_address_get_prefix (addr));
 	nm_log_info (LOGD_VPN, "Internal IP4 Point-to-Point Address: %s",
@@ -381,6 +381,9 @@ print_vpn_config (NMIP4Config *config,
 		             nm_ip4_route_get_prefix (route),
 		             ip_address_to_string (nm_ip4_route_get_next_hop (route)));
 	}
+
+	nm_log_info (LOGD_VPN, "Forbid Default Route: %s",
+	             nm_ip4_config_get_never_default (config) ? "yes" : "no");
 
 	num = nm_ip4_config_get_num_nameservers (config);
 	for (i = 0; i < num; i++) {
@@ -425,7 +428,7 @@ nm_vpn_connection_ip4_config_get (DBusGProxy *proxy,
 
 	val = (GValue *) g_hash_table_lookup (config_hash, NM_VPN_PLUGIN_IP4_CONFIG_TUNDEV);
 	if (val)
-		priv->tundev = g_strdup (g_value_get_string (val));
+		priv->ip_iface = g_strdup (g_value_get_string (val));
 	else {
 		nm_log_err (LOGD_VPN, "invalid or missing tunnel device received!");
 		goto error;
@@ -527,24 +530,28 @@ nm_vpn_connection_ip4_config_get (DBusGProxy *proxy,
 		g_slist_free (routes);
 	}
 
-	print_vpn_config (config, priv->ip4_internal_gw, priv->tundev, priv->banner);
+	val = (GValue *) g_hash_table_lookup (config_hash, NM_VPN_PLUGIN_IP4_CONFIG_NEVER_DEFAULT);
+	if (val && G_VALUE_HOLDS_BOOLEAN (val))
+		nm_ip4_config_set_never_default (config, g_value_get_boolean (val));
+
+	print_vpn_config (config, priv->ip4_internal_gw, priv->ip_iface, priv->banner);
 
 	/* Merge in user overrides from the NMConnection's IPv4 setting */
 	s_ip4 = NM_SETTING_IP4_CONFIG (nm_connection_get_setting (priv->connection, NM_TYPE_SETTING_IP4_CONFIG));
 	nm_utils_merge_ip4_config (config, s_ip4);
 
-	nm_system_device_set_up_down_with_iface (priv->tundev, TRUE, NULL);
+	nm_system_device_set_up_down_with_iface (priv->ip_iface, TRUE, NULL);
 
-	if (nm_system_apply_ip4_config (priv->tundev, config, 0, NM_IP4_COMPARE_FLAG_ALL)) {
-		NMNamedManager *named_mgr;
+	if (nm_system_apply_ip4_config (priv->ip_iface, config, 0, NM_IP4_COMPARE_FLAG_ALL)) {
+		NMDnsManager *dns_mgr;
 
 		/* Add any explicit route to the VPN gateway through the parent device */
 		priv->gw_route = nm_system_add_ip4_vpn_gateway_route (priv->parent_dev, config);
 
 		/* Add the VPN to DNS */
-		named_mgr = nm_named_manager_get ();
-		nm_named_manager_add_ip4_config (named_mgr, priv->tundev, config, NM_NAMED_IP_CONFIG_TYPE_VPN);
-		g_object_unref (named_mgr);
+		dns_mgr = nm_dns_manager_get (NULL);
+		nm_dns_manager_add_ip4_config (dns_mgr, priv->ip_iface, config, NM_DNS_IP_CONFIG_TYPE_VPN);
+		g_object_unref (dns_mgr);
 
 		priv->ip4_config = config;
 
@@ -735,7 +742,7 @@ nm_vpn_connection_get_ip_iface (NMVPNConnection *connection)
 {
 	g_return_val_if_fail (NM_IS_VPN_CONNECTION (connection), NULL);
 
-	return NM_VPN_CONNECTION_GET_PRIVATE (connection)->tundev;
+	return NM_VPN_CONNECTION_GET_PRIVATE (connection)->ip_iface;
 }
 
 NMDevice *
@@ -883,21 +890,21 @@ vpn_cleanup (NMVPNConnection *connection)
 {
 	NMVPNConnectionPrivate *priv = NM_VPN_CONNECTION_GET_PRIVATE (connection);
 
-	if (priv->tundev) {
-		nm_system_device_set_up_down_with_iface (priv->tundev, FALSE, NULL);
+	if (priv->ip_iface) {
+		nm_system_device_set_up_down_with_iface (priv->ip_iface, FALSE, NULL);
 		/* FIXME: use AF_UNSPEC here when we have IPv6 support */
-		nm_system_device_flush_routes_with_iface (priv->tundev, AF_INET);
-		nm_system_device_flush_addresses_with_iface (priv->tundev);
+		nm_system_device_flush_routes_with_iface (priv->ip_iface, AF_INET);
+		nm_system_device_flush_addresses_with_iface (priv->ip_iface);
 	}
 
 	if (priv->ip4_config) {
 		NMIP4Config *parent_config;
-		NMNamedManager *named_mgr;
+		NMDnsManager *dns_mgr;
 
 		/* Remove attributes of the VPN's IP4 Config */
-		named_mgr = nm_named_manager_get ();
-		nm_named_manager_remove_ip4_config (named_mgr, priv->tundev, priv->ip4_config);
-		g_object_unref (named_mgr);
+		dns_mgr = nm_dns_manager_get (NULL);
+		nm_dns_manager_remove_ip4_config (dns_mgr, priv->ip_iface, priv->ip4_config);
+		g_object_unref (dns_mgr);
 
 		/* Remove any previously added VPN gateway host route */
 		if (priv->gw_route)
@@ -925,9 +932,9 @@ vpn_cleanup (NMVPNConnection *connection)
 		priv->banner = NULL;
 	}
 
-	if (priv->tundev) {
-		g_free (priv->tundev);
-		priv->tundev = NULL;
+	if (priv->ip_iface) {
+		g_free (priv->ip_iface);
+		priv->ip_iface = NULL;
 	}
 
 	/* Clear out connection secrets to ensure that the settings service
@@ -1031,7 +1038,7 @@ finalize (GObject *object)
 	NMVPNConnectionPrivate *priv = NM_VPN_CONNECTION_GET_PRIVATE (object);
 
 	g_free (priv->banner);
-	g_free (priv->tundev);
+	g_free (priv->ip_iface);
 	g_free (priv->ac_path);
 
 	G_OBJECT_CLASS (nm_vpn_connection_parent_class)->finalize (object);

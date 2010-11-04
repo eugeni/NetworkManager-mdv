@@ -18,6 +18,7 @@
  * Copyright (C) 2008 - 2010 Red Hat, Inc.
  */
 
+#include <config.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
@@ -185,7 +186,7 @@ make_connection_setting (const char *file,
 }
 
 static gboolean
-read_mac_address (shvarFile *ifcfg, GByteArray **array, GError **error)
+read_mac_address (shvarFile *ifcfg, const char *key, GByteArray **array, GError **error)
 {
 	char *value = NULL;
 	struct ether_addr *mac;
@@ -196,7 +197,7 @@ read_mac_address (shvarFile *ifcfg, GByteArray **array, GError **error)
 	g_return_val_if_fail (error != NULL, FALSE);
 	g_return_val_if_fail (*error == NULL, FALSE);
 
-	value = svGetValue (ifcfg, "HWADDR", FALSE);
+	value = svGetValue (ifcfg, key, FALSE);
 	if (!value || !strlen (value)) {
 		g_free (value);
 		return TRUE;
@@ -205,8 +206,8 @@ read_mac_address (shvarFile *ifcfg, GByteArray **array, GError **error)
 	mac = ether_aton (value);
 	if (!mac) {
 		g_free (value);
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
-		             "The MAC address '%s' was invalid.", value);
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
+		             "%s: the MAC address '%s' was invalid.", key, value);
 		return FALSE;
 	}
 
@@ -282,23 +283,23 @@ fill_ip4_setting_from_ibft (shvarFile *ifcfg,
 		return FALSE;
 
 	if (!WIFEXITED (status)) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "%s exited abnormally.", iscsiadm_path);
 		goto done;
 	}
 
 	if (WEXITSTATUS (status) != 0) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "%s exited with error %d.  Message: '%s'",
 		             iscsiadm_path, WEXITSTATUS (status), err ? err : "(none)");
 		goto done;
 	}
 
-	if (!read_mac_address (ifcfg, &ifcfg_mac, error))
+	if (!read_mac_address (ifcfg, "HWADDR", &ifcfg_mac, error))
 		goto done;
 	/* Ensure we got a MAC */
 	if (!ifcfg_mac) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing device MAC address (no HWADDR tag present).");
 		goto done;
 	}
@@ -488,7 +489,7 @@ read_ip4_address (shvarFile *ifcfg,
 		*out_addr = ip4_addr.s_addr;
 		success = TRUE;
 	} else {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Invalid %s IP4 address '%s'", tag, value);
 	}
 	g_free (value);
@@ -514,7 +515,7 @@ parse_ip6_address (const char *value,
 		*out_addr = ip6_addr;
 		success = TRUE;
 	} else {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Invalid IP6 address '%s'", value);
 	}
 	return success;
@@ -588,7 +589,7 @@ read_full_ip4_address (shvarFile *ifcfg,
 		errno = 0;
 		prefix = strtol (value, NULL, 10);
 		if (errno || prefix <= 0 || prefix > 32) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Invalid IP4 prefix '%s'", value);
 			g_free (value);
 			goto error;
@@ -619,7 +620,7 @@ read_full_ip4_address (shvarFile *ifcfg,
 
 	/* Validate the prefix */
 	if (nm_ip4_address_get_prefix (addr) > 32) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing or invalid IP4 prefix '%d'",
 		             nm_ip4_address_get_prefix (addr));
 		goto error;
@@ -683,7 +684,7 @@ read_one_ip4_route (shvarFile *ifcfg,
 	if (!read_ip4_address (ifcfg, gw_tag, &tmp, error))
 		goto out;
 	if (!tmp) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing or invalid IP4 gateway address '%d'",
 		             tmp);
 		goto out;
@@ -698,7 +699,7 @@ read_one_ip4_route (shvarFile *ifcfg,
 	/* Validate the prefix */
 	if (  !nm_ip4_route_get_prefix (route)
 	    || nm_ip4_route_get_prefix (route) > 32) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing or invalid IP4 prefix '%d'",
 		             nm_ip4_route_get_prefix (route));
 		goto out;
@@ -712,7 +713,7 @@ read_one_ip4_route (shvarFile *ifcfg,
 		errno = 0;
 		metric = strtol (value, NULL, 10);
 		if (errno || metric < 0) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Invalid IP4 route metric '%s'", value);
 			g_free (value);
 			goto out;
@@ -796,7 +797,7 @@ read_route_file_legacy (const char *filename, NMSettingIP4Config *s_ip4, GError 
 			g_regex_match (regex_to2, *iter, 0, &match_info);
 			if (!g_match_info_matches (match_info)) {
 				g_match_info_free (match_info);
-				g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 					     "Missing IP4 route destination address in record: '%s'", *iter);
 				goto error;
 			}
@@ -806,7 +807,7 @@ read_route_file_legacy (const char *filename, NMSettingIP4Config *s_ip4, GError 
 		if (!strcmp (dest, "default"))
 			strcpy (dest, "0.0.0.0");
 		if (inet_pton (AF_INET, dest, &ip4_addr) != 1) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 				     "Invalid IP4 route destination address '%s'", dest);
 			g_free (dest);
 			goto error;
@@ -821,7 +822,7 @@ read_route_file_legacy (const char *filename, NMSettingIP4Config *s_ip4, GError 
 			errno = 0;
 			prefix_int = strtol (prefix, NULL, 10);
 			if (errno || prefix_int < 0 || prefix_int > 32) {
-				g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 					     "Invalid IP4 route destination prefix '%s'", prefix);
 				g_free (prefix);
 				goto error;
@@ -835,14 +836,14 @@ read_route_file_legacy (const char *filename, NMSettingIP4Config *s_ip4, GError 
 		g_regex_match (regex_via, *iter, 0, &match_info);
 		if (!g_match_info_matches (match_info)) {
 			g_match_info_free (match_info);
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Missing IP4 route gateway address in record: '%s'", *iter);
 			goto error;
 		}
 		next_hop = g_match_info_fetch (match_info, 1);
 		g_match_info_free (match_info);
 		if (inet_pton (AF_INET, next_hop, &ip4_addr) != 1) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Invalid IP4 route gateway address '%s'", next_hop);
 			g_free (next_hop);
 			goto error;
@@ -859,7 +860,7 @@ read_route_file_legacy (const char *filename, NMSettingIP4Config *s_ip4, GError 
 			metric_int = strtol (metric, NULL, 10);
 			if (errno || metric_int < 0) {
 				g_match_info_free (match_info);
-				g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 				             "Invalid IP4 route metric '%s'", metric);
 				g_free (metric);
 				goto error;
@@ -905,7 +906,7 @@ parse_full_ip6_address (const char *addr_str, GError **error)
 	/* Split the adddress and prefix */
 	list = g_strsplit_set (addr_str, "/", 2);
 	if (g_strv_length (list) < 1) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Invalid IP6 address '%s'", addr_str);
 		goto error;
 	}
@@ -929,7 +930,7 @@ parse_full_ip6_address (const char *addr_str, GError **error)
 		errno = 0;
 		prefix = strtol (prefix_tag, NULL, 10);
 		if (errno || prefix <= 0 || prefix > 128) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Invalid IP6 prefix '%s'", prefix_tag);
 			goto error;
 		}
@@ -1018,7 +1019,7 @@ read_route6_file (const char *filename, NMSettingIP6Config *s_ip6, GError **erro
 			g_regex_match (regex_to2, *iter, 0, &match_info);
 			if (!g_match_info_matches (match_info)) {
 				g_match_info_free (match_info);
-				g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 					     "Missing IP6 route destination address in record: '%s'", *iter);
 				goto error;
 			}
@@ -1028,7 +1029,7 @@ read_route6_file (const char *filename, NMSettingIP6Config *s_ip6, GError **erro
 		if (!strcmp (dest, "default"))
 			strcpy (dest, "::");
 		if (inet_pton (AF_INET6, dest, &ip6_addr) != 1) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 				     "Invalid IP6 route destination address '%s'", dest);
 			g_free (dest);
 			goto error;
@@ -1043,7 +1044,7 @@ read_route6_file (const char *filename, NMSettingIP6Config *s_ip6, GError **erro
 			errno = 0;
 			prefix_int = strtol (prefix, NULL, 10);
 			if (errno || prefix_int < 0 || prefix_int > 128) {
-				g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 					     "Invalid IP6 route destination prefix '%s'", prefix);
 				g_free (prefix);
 				goto error;
@@ -1057,14 +1058,14 @@ read_route6_file (const char *filename, NMSettingIP6Config *s_ip6, GError **erro
 		g_regex_match (regex_via, *iter, 0, &match_info);
 		if (!g_match_info_matches (match_info)) {
 			g_match_info_free (match_info);
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Missing IP6 route gateway address in record: '%s'", *iter);
 			goto error;
 		}
 		next_hop = g_match_info_fetch (match_info, 1);
 		g_match_info_free (match_info);
 		if (inet_pton (AF_INET6, next_hop, &ip6_addr) != 1) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Invalid IP6 route gateway address '%s'", next_hop);
 			g_free (next_hop);
 			goto error;
@@ -1081,7 +1082,7 @@ read_route6_file (const char *filename, NMSettingIP6Config *s_ip6, GError **erro
 			metric_int = strtol (metric, NULL, 10);
 			if (errno || metric_int < 0 || metric_int > G_MAXUINT32) {
 				g_match_info_free (match_info);
-				g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 				             "Invalid IP6 route metric '%s'", metric);
 				g_free (metric);
 				goto error;
@@ -1129,7 +1130,7 @@ make_ip4_setting (shvarFile *ifcfg,
 
 	s_ip4 = (NMSettingIP4Config *) nm_setting_ip4_config_new ();
 	if (!s_ip4) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not allocate IP4 setting");
 		return NULL;
 	}
@@ -1190,7 +1191,7 @@ make_ip4_setting (shvarFile *ifcfg,
 		} else if (!g_ascii_strcasecmp (value, "none") || !g_ascii_strcasecmp (value, "static")) {
 			/* Static IP */
 		} else if (strlen (value)) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Unknown BOOTPROTO '%s'", value);
 			g_free (value);
 			goto done;
@@ -1317,7 +1318,7 @@ make_ip4_setting (shvarFile *ifcfg,
 	/* Static routes  - route-<name> file */
 	route_path = utils_get_route_path (ifcfg->fileName);
 	if (!route_path) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not get route file path for '%s'", ifcfg->fileName);
 		goto done;
 	}
@@ -1389,7 +1390,7 @@ make_ip6_setting (shvarFile *ifcfg,
 	char *value = NULL;
 	char *str_value;
 	char *route6_path = NULL;
-	gboolean bool_value, ipv6forwarding, ipv6_autoconf;
+	gboolean bool_value, ipv6forwarding, ipv6_autoconf, dhcp6 = FALSE;
 	char *method = NM_SETTING_IP6_CONFIG_METHOD_MANUAL;
 	guint32 i;
 	shvarFile *network_ifcfg;
@@ -1397,7 +1398,7 @@ make_ip6_setting (shvarFile *ifcfg,
 
 	s_ip6 = (NMSettingIP6Config *) nm_setting_ip6_config_new ();
 	if (!s_ip6) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not allocate IP6 setting");
 		return NULL;
 	}
@@ -1466,9 +1467,12 @@ make_ip6_setting (shvarFile *ifcfg,
 	/* Find out method property */
 	ipv6forwarding = svTrueValue (ifcfg, "IPV6FORWARDING", FALSE);
 	ipv6_autoconf = svTrueValue (ifcfg, "IPV6_AUTOCONF", !ipv6forwarding);
+	dhcp6 = svTrueValue (ifcfg, "DHCPV6C", FALSE);
 
 	if (ipv6_autoconf)
 		method = NM_SETTING_IP6_CONFIG_METHOD_AUTO;
+	else if (dhcp6)
+		method = NM_SETTING_IP6_CONFIG_METHOD_DHCP;
 	else {
 		/* IPV6_AUTOCONF=no and no IPv6 address -> method 'link-local' */
 		str_value = svGetValue (ifcfg, "IPV6ADDR", FALSE);
@@ -1559,7 +1563,7 @@ make_ip6_setting (shvarFile *ifcfg,
 	/* Read static routes from route6-<interface> file */
 	route6_path = utils_get_route6_path (ifcfg->fileName);
 	if (!route6_path) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not get route6 file path for '%s'", ifcfg->fileName);
 		goto error;
 	}
@@ -1615,7 +1619,7 @@ add_one_wep_key (shvarFile *ifcfg,
 
 			while (*p) {
 				if (!g_ascii_isxdigit (*p)) {
-					g_set_error (error, ifcfg_plugin_error_quark (), 0,
+					g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 					             "Invalid hexadecimal WEP key.");
 					goto out;
 				}
@@ -1629,7 +1633,7 @@ add_one_wep_key (shvarFile *ifcfg,
 
 			while (*p) {
 				if (!isascii ((int) (*p))) {
-					g_set_error (error, ifcfg_plugin_error_quark (), 0,
+					g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 					             "Invalid ASCII WEP key.");
 					goto out;
 				}
@@ -1650,7 +1654,7 @@ add_one_wep_key (shvarFile *ifcfg,
 		nm_setting_wireless_security_set_wep_key (s_wsec, key_idx, key);
 		success = TRUE;
 	} else
-		g_set_error (error, ifcfg_plugin_error_quark (), 0, "Invalid WEP key length.");
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0, "Invalid WEP key length.");
 
 out:
 	g_free (value);
@@ -1710,7 +1714,7 @@ make_wep_setting (shvarFile *ifcfg,
 			default_key_idx--;  /* convert to [0...3] */
 			g_object_set (s_wireless_sec, NM_SETTING_WIRELESS_SECURITY_WEP_TX_KEYIDX, default_key_idx, NULL);
 		} else {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Invalid default WEP key '%s'", value);
 	 		g_free (value);
 			goto error;
@@ -1735,15 +1739,15 @@ make_wep_setting (shvarFile *ifcfg,
 
 	/* If there's a default key, ensure that key exists */
 	if ((default_key_idx == 1) && !nm_setting_wireless_security_get_wep_key (s_wireless_sec, 1)) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Default WEP key index was 2, but no valid KEY2 exists.");
 		goto error;
 	} else if ((default_key_idx == 2) && !nm_setting_wireless_security_get_wep_key (s_wireless_sec, 2)) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Default WEP key index was 3, but no valid KEY3 exists.");
 		goto error;
 	} else if ((default_key_idx == 3) && !nm_setting_wireless_security_get_wep_key (s_wireless_sec, 3)) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Default WEP key index was 4, but no valid KEY4 exists.");
 		goto error;
 	}
@@ -1760,7 +1764,7 @@ make_wep_setting (shvarFile *ifcfg,
 		} else if (!strcmp (lcase, "restricted")) {
 			g_object_set (s_wireless_sec, NM_SETTING_WIRELESS_SECURITY_AUTH_ALG, "shared", NULL);
 		} else {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Invalid WEP authentication algorithm '%s'",
 			             lcase);
 			g_free (lcase);
@@ -1778,7 +1782,7 @@ make_wep_setting (shvarFile *ifcfg,
 
 		auth_alg = nm_setting_wireless_security_get_auth_alg (s_wireless_sec);
 		if (auth_alg && !strcmp (auth_alg, "shared")) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "WEP Shared Key authentication is invalid for "
 			             "unencrypted connections.");
 			goto error;
@@ -1874,7 +1878,7 @@ parse_wpa_psk (shvarFile *ifcfg,
 	char *psk = NULL, *p, *hashed = NULL;
 	gboolean quoted = FALSE;
 
-	/* Passphrase must be between 10 and 66 characters in length becuase WPA
+	/* Passphrase must be between 10 and 66 characters in length because WPA
 	 * hex keys are exactly 64 characters (no quoting), and WPA passphrases
 	 * are between 8 and 63 characters (inclusive), plus optional quoting if
 	 * the passphrase contains spaces.
@@ -1892,7 +1896,7 @@ parse_wpa_psk (shvarFile *ifcfg,
 		psk = svGetValue (ifcfg, "WPA_PSK", TRUE);
 
 	if (!psk) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing WPA_PSK for WPA-PSK key management");
 		return NULL;
 	}
@@ -1906,7 +1910,7 @@ parse_wpa_psk (shvarFile *ifcfg,
 		/* Verify the hex PSK; 64 digits */
 		while (*p) {
 			if (!isxdigit (*p++)) {
-				g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 				             "Invalid WPA_PSK (contains non-hexadecimal characters)");
 				goto out;
 			}
@@ -1927,7 +1931,7 @@ parse_wpa_psk (shvarFile *ifcfg,
 
 		/* Length check */
 		if (strlen (p) < 8 || strlen (p) > 63) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Invalid WPA_PSK (passphrases must be between "
 			             "8 and 63 characters long (inclusive))");
 			goto out;
@@ -1937,7 +1941,7 @@ parse_wpa_psk (shvarFile *ifcfg,
 	}
 
 	if (!hashed) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Invalid WPA_PSK (doesn't look like a passphrase or hex key)");
 		goto out;
 	}
@@ -1983,7 +1987,7 @@ eap_simple_reader (const char *eap_method,
 
 	value = svGetValue (ifcfg, "IEEE_8021X_IDENTITY", FALSE);
 	if (!value) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing IEEE_8021X_IDENTITY for EAP method '%s'.",
 		             eap_method);
 		return FALSE;
@@ -1998,7 +2002,7 @@ eap_simple_reader (const char *eap_method,
 	}
 
 	if (!value) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing IEEE_8021X_PASSWORD for EAP method '%s'.",
 		             eap_method);
 		return FALSE;
@@ -2051,7 +2055,7 @@ eap_tls_reader (const char *eap_method,
 
 	value = svGetValue (ifcfg, "IEEE_8021X_IDENTITY", FALSE);
 	if (!value) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing IEEE_8021X_IDENTITY for EAP method '%s'.",
 		             eap_method);
 		return FALSE;
@@ -2098,7 +2102,7 @@ eap_tls_reader (const char *eap_method,
 	}
 
 	if (!privkey_password) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing %s for EAP method '%s'.",
 		             phase2 ? "IEEE_8021X_INNER_PRIVATE_KEY_PASSWORD" : "IEEE_8021X_PRIVATE_KEY_PASSWORD",
 		             eap_method);
@@ -2110,7 +2114,7 @@ eap_tls_reader (const char *eap_method,
 	                      phase2 ? "IEEE_8021X_INNER_PRIVATE_KEY" : "IEEE_8021X_PRIVATE_KEY",
 	                      FALSE);
 	if (!privkey) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing %s for EAP method '%s'.",
 	                      phase2 ? "IEEE_8021X_INNER_PRIVATE_KEY" : "IEEE_8021X_PRIVATE_KEY",
 		             eap_method);
@@ -2148,7 +2152,7 @@ eap_tls_reader (const char *eap_method,
 		                          phase2 ? "IEEE_8021X_INNER_CLIENT_CERT" : "IEEE_8021X_CLIENT_CERT",
 		                          FALSE);
 		if (!client_cert) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Missing %s for EAP method '%s'.",
 			             phase2 ? "IEEE_8021X_INNER_CLIENT_CERT" : "IEEE_8021X_CLIENT_CERT",
 			             eap_method);
@@ -2224,7 +2228,7 @@ eap_peap_reader (const char *eap_method,
 		else if (!strcmp (peapver, "1"))
 			g_object_set (s_8021x, NM_SETTING_802_1X_PHASE1_PEAPVER, "1", NULL);
 		else {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Unknown IEEE_8021X_PEAP_VERSION value '%s'",
 			             peapver);
 			goto done;
@@ -2236,7 +2240,7 @@ eap_peap_reader (const char *eap_method,
 
 	inner_auth = svGetValue (ifcfg, "IEEE_8021X_INNER_AUTH_METHODS", FALSE);
 	if (!inner_auth) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing IEEE_8021X_INNER_AUTH_METHODS.");
 		goto done;
 	}
@@ -2256,7 +2260,7 @@ eap_peap_reader (const char *eap_method,
 			if (!eap_tls_reader (*iter, ifcfg, keys, s_8021x, TRUE, error))
 				goto done;
 		} else {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Unknown IEEE_8021X_INNER_AUTH_METHOD '%s'.",
 			             *iter);
 			goto done;
@@ -2269,7 +2273,7 @@ eap_peap_reader (const char *eap_method,
 	}
 
 	if (!nm_setting_802_1x_get_phase2_auth (s_8021x)) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "No valid IEEE_8021X_INNER_AUTH_METHODS found.");
 		goto done;
 	}
@@ -2324,7 +2328,7 @@ eap_ttls_reader (const char *eap_method,
 
 	tmp = svGetValue (ifcfg, "IEEE_8021X_INNER_AUTH_METHODS", FALSE);
 	if (!tmp) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing IEEE_8021X_INNER_AUTH_METHODS.");
 		goto done;
 	}
@@ -2354,7 +2358,7 @@ eap_ttls_reader (const char *eap_method,
 				goto done;
 			g_object_set (s_8021x, NM_SETTING_802_1X_PHASE2_AUTHEAP, (*iter + strlen ("eap-")), NULL);
 		} else {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Unknown IEEE_8021X_INNER_AUTH_METHOD '%s'.",
 			             *iter);
 			goto done;
@@ -2388,7 +2392,7 @@ fill_8021x (shvarFile *ifcfg,
 
 	value = svGetValue (ifcfg, "IEEE_8021X_EAP_METHODS", FALSE);
 	if (!value) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing IEEE_8021X_EAP_METHODS for key management '%s'",
 		             key_mgmt);
 		return NULL;
@@ -2446,7 +2450,7 @@ fill_8021x (shvarFile *ifcfg,
 	g_strfreev (list);
 
 	if (nm_setting_802_1x_get_num_eap_methods (s_8021x) == 0) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "No valid EAP methods found in IEEE_8021X_EAP_METHODS.");
 		goto error;
 	}
@@ -2524,7 +2528,7 @@ make_wpa_setting (shvarFile *ifcfg,
 	} else if (!strcmp (value, "WPA-EAP") || !strcmp (value, "IEEE8021X")) {
 		/* Adhoc mode is mutually exclusive with any 802.1x-based authentication */
 		if (adhoc) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Ad-Hoc mode cannot be used with KEY_MGMT type '%s'", value);
 			goto error;
 		}
@@ -2537,7 +2541,7 @@ make_wpa_setting (shvarFile *ifcfg,
 		g_object_set (wsec, NM_SETTING_WIRELESS_SECURITY_KEY_MGMT, lower, NULL);
 		g_free (lower);
 	} else {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Unknown wireless KEY_MGMT type '%s'", value);
 		goto error;
 	}
@@ -2589,7 +2593,7 @@ make_leap_setting (shvarFile *ifcfg,
 
 	value = svGetValue (ifcfg, "IEEE_8021X_IDENTITY", FALSE);
 	if (!value || !strlen (value)) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing LEAP identity");
 		goto error;
 	}
@@ -2655,7 +2659,7 @@ make_wireless_setting (shvarFile *ifcfg,
 
 	s_wireless = NM_SETTING_WIRELESS (nm_setting_wireless_new ());
 
-	if (read_mac_address (ifcfg, &array, error)) {
+	if (read_mac_address (ifcfg, "HWADDR", &array, error)) {
 		if (array) {
 			g_object_set (s_wireless, NM_SETTING_WIRELESS_MAC_ADDRESS, array, NULL);
 
@@ -2678,6 +2682,14 @@ make_wireless_setting (shvarFile *ifcfg,
 		return NULL;
 	}
 
+	array = NULL;
+	if (read_mac_address (ifcfg, "MACADDR", &array, error)) {
+		if (array) {
+			g_object_set (s_wireless, NM_SETTING_WIRELESS_CLONED_MAC_ADDRESS, array, NULL);
+			g_byte_array_free (array, TRUE);
+		}
+	}
+
 	value = svGetValue (ifcfg, "ESSID", TRUE);
 	if (value) {
 		gsize ssid_len = 0, value_len = strlen (value);
@@ -2696,7 +2708,7 @@ make_wireless_setting (shvarFile *ifcfg,
 		} else if ((value_len > 2) && (strncmp (value, "0x", 2) == 0)) {
 			/* Hex representation */
 			if (value_len % 2) {
-				g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 				             "Invalid SSID '%s' size (looks like hex but length not multiple of 2)",
 				             value);
 				g_free (value);
@@ -2706,7 +2718,7 @@ make_wireless_setting (shvarFile *ifcfg,
 			p = value + 2;
 			while (*p) {
 				if (!isxdigit (*p)) {
-					g_set_error (error, ifcfg_plugin_error_quark (), 0,
+					g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 					             "Invalid SSID '%s' character (looks like hex SSID but '%c' isn't a hex digit)",
 					             value, *p);
 					g_free (value);
@@ -2722,7 +2734,7 @@ make_wireless_setting (shvarFile *ifcfg,
 		}
 
 		if (ssid_len > 32 || ssid_len == 0) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Invalid SSID '%s' (size %zu not between 1 and 32 inclusive)",
 			             value, ssid_len);
 			g_free (value);
@@ -2737,7 +2749,7 @@ make_wireless_setting (shvarFile *ifcfg,
 	} else {
 		/* Only fail on lack of SSID if device is managed */
 		if (nm_controlled) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0, "Missing SSID");
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0, "Missing SSID");
 			goto error;
 		}
 	}
@@ -2758,7 +2770,7 @@ make_wireless_setting (shvarFile *ifcfg,
 		} else if (!strcmp (lcase, "managed") || !strcmp (lcase, "auto")) {
 			mode = "infrastructure";
 		} else {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Invalid mode '%s' (not 'Ad-Hoc', 'Managed', or 'Auto')",
 			             lcase);
 			g_free (lcase);
@@ -2776,7 +2788,7 @@ make_wireless_setting (shvarFile *ifcfg,
 
 		eth = ether_aton (value);
 		if (!eth) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Invalid BSSID '%s'", value);
 			goto error;
 		}
@@ -2794,7 +2806,7 @@ make_wireless_setting (shvarFile *ifcfg,
 		errno = 0;
 		chan = strtol (value, NULL, 10);
 		if (errno || chan <= 0 || chan > 196) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Invalid wireless channel '%s'", value);
 			g_free (value);
 			goto error;
@@ -2813,7 +2825,7 @@ make_wireless_setting (shvarFile *ifcfg,
 		errno = 0;
 		mtu = strtol (value, NULL, 10);
 		if (errno || mtu < 0 || mtu > 50000) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Invalid wireless MTU '%s'", value);
 			g_free (value);
 			goto error;
@@ -2854,7 +2866,7 @@ wireless_connection_from_ifcfg (const char *file,
 
 	connection = nm_connection_new ();
 	if (!connection) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Failed to allocate new connection for %s.", file);
 		return NULL;
 	}
@@ -2900,7 +2912,7 @@ wireless_connection_from_ifcfg (const char *file,
 	                                       printable_ssid);
 	g_free (printable_ssid);
 	if (!con_setting) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Failed to create connection setting.");
 		g_object_unref (connection);
 		return NULL;
@@ -2930,6 +2942,7 @@ make_wired_setting (shvarFile *ifcfg,
 	char *value = NULL;
 	int mtu;
 	GByteArray *mac = NULL;
+	char *nettype;
 
 	s_wired = NM_SETTING_WIRED (nm_setting_wired_new ());
 
@@ -2945,7 +2958,7 @@ make_wired_setting (shvarFile *ifcfg,
 		g_free (value);
 	}
 
-	if (read_mac_address (ifcfg, &mac, error)) {
+	if (read_mac_address (ifcfg, "HWADDR", &mac, error)) {
 		if (mac) {
 			g_object_set (s_wired, NM_SETTING_WIRED_MAC_ADDRESS, mac, NULL);
 
@@ -2957,15 +2970,106 @@ make_wired_setting (shvarFile *ifcfg,
 			}
 
 			g_byte_array_free (mac, TRUE);
-		} else if (!nm_controlled) {
-			/* If NM_CONTROLLED=no but there wasn't a MAC address, notify
-			 * the user that the device cannot be unmanaged.
-			 */
-			PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: NM_CONTROLLED was false but HWADDR was missing; device will be managed");
 		}
 	} else {
 		g_object_unref (s_wired);
-		s_wired = NULL;
+		return NULL;
+	}
+
+	value = svGetValue (ifcfg, "SUBCHANNELS", FALSE);
+	if (value) {
+		const char *p = value;
+		gboolean success = TRUE;
+		char **chans = NULL;
+
+		/* basic sanity checks */
+		while (*p) {
+			if (!isxdigit (*p) && (*p != ',') && (*p != '.')) {
+				PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: invalid SUBCHANNELS '%s'", value);
+				success = FALSE;
+				break;
+			}
+			p++;
+		}
+
+		if (success) {
+			guint32 num_chans;
+
+			chans = g_strsplit_set (value, ",", 0);
+			num_chans = g_strv_length (chans);
+			if (num_chans < 2 || num_chans > 3) {
+				PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: invalid SUBCHANNELS '%s' (%d channels, 2 or 3 expected)",
+				             value, g_strv_length (chans));
+			} else {
+				GPtrArray *array = g_ptr_array_sized_new (num_chans);
+
+				g_ptr_array_add (array, chans[0]);
+				g_ptr_array_add (array, chans[1]);
+				if (num_chans == 3)
+					g_ptr_array_add (array, chans[2]);
+
+				g_object_set (s_wired, NM_SETTING_WIRED_S390_SUBCHANNELS, array, NULL);
+				g_ptr_array_free (array, TRUE);
+
+				/* set the unmanaged spec too */
+				if (!nm_controlled && !*unmanaged)
+					*unmanaged = g_strdup_printf ("s390-subchannels:%s", value);
+			}
+			g_strfreev (chans);
+		}
+		g_free (value);
+	}
+
+	value = svGetValue (ifcfg, "PORTNAME", FALSE);
+	if (value && strlen (value)) {
+		nm_setting_wired_add_s390_option (s_wired, "portname", value);
+	}
+	g_free (value);
+
+	nettype = svGetValue (ifcfg, "NETTYPE", FALSE);
+	if (nettype && strlen (nettype)) {
+		if (!strcmp (nettype, "qeth") || !strcmp (nettype, "lcs") || !strcmp (nettype, "ctc"))
+			g_object_set (s_wired, NM_SETTING_WIRED_S390_NETTYPE, nettype, NULL);
+		else
+			PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: unknown s390 NETTYPE '%s'", nettype);
+	}
+
+	value = svGetValue (ifcfg, "OPTIONS", FALSE);
+	if (value && strlen (value)) {
+		char **options, **iter;
+
+		iter = options = g_strsplit_set (value, " ", 0);
+		while (iter && *iter) {
+			char *equals = strchr (*iter, '=');
+			gboolean valid = FALSE;
+
+			if (equals) {
+				*equals = '\0';
+				valid = nm_setting_wired_add_s390_option (s_wired, *iter, equals + 1);
+			}
+			if (!valid)
+				PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: invalid s390 OPTION '%s'", *iter);
+			iter++;
+		}
+		g_strfreev (options);
+	}
+	g_free (value);
+
+	g_free (nettype);
+
+	if (!nm_controlled && !*unmanaged) {
+		/* If NM_CONTROLLED=no but there wasn't a MAC address or z/VM
+		 * subchannels, notify the user that the device cannot be unmanaged.
+		 */
+		PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: NM_CONTROLLED was false but HWADDR or SUBCHANNELS was missing; device will be managed");
+	}
+
+	mac = NULL;
+	if (read_mac_address (ifcfg, "MACADDR", &mac, error)) {
+		if (mac) {
+			g_object_set (s_wired, NM_SETTING_WIRED_CLONED_MAC_ADDRESS, mac, NULL);
+			g_byte_array_free (mac, TRUE);
+		}
 	}
 
 	value = svGetValue (ifcfg, "KEY_MGMT", FALSE);
@@ -2975,7 +3079,7 @@ make_wired_setting (shvarFile *ifcfg,
 			if (!*s_8021x)
 				goto error;
 		} else {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Unknown wired KEY_MGMT type '%s'", value);
 			goto error;
 		}
@@ -3007,14 +3111,14 @@ wired_connection_from_ifcfg (const char *file,
 
 	connection = nm_connection_new ();
 	if (!connection) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Failed to allocate new connection for %s.", file);
 		return NULL;
 	}
 
 	con_setting = make_connection_setting (file, ifcfg, NM_SETTING_WIRED_SETTING_NAME, NULL);
 	if (!con_setting) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Failed to create connection setting.");
 		g_object_unref (connection);
 		return NULL;
@@ -3080,6 +3184,12 @@ is_wireless_device (const char *iface)
 	return is_wireless;
 }
 
+enum {
+	IGNORE_REASON_NONE = 0x00,
+	IGNORE_REASON_BRIDGE = 0x01,
+	IGNORE_REASON_VLAN = 0x02,
+};
+
 NMConnection *
 connection_from_file (const char *filename,
                       const char *network_file,  /* for unit tests only */
@@ -3089,16 +3199,18 @@ connection_from_file (const char *filename,
                       char **keyfile,
                       char **routefile,
                       char **route6file,
-                      GError **error,
+                      GError **out_error,
                       gboolean *ignore_error)
 {
 	NMConnection *connection = NULL;
 	shvarFile *parsed;
-	char *type, *nmc = NULL, *bootproto;
+	char *type, *nmc = NULL, *bootproto, *tmp;
 	NMSetting *s_ip4, *s_ip6;
 	const char *ifcfg_name = NULL;
 	gboolean nm_controlled = TRUE;
 	gboolean ip6_used = FALSE;
+	GError *error = NULL;
+	guint32 ignore_reason = IGNORE_REASON_NONE;
 
 	g_return_val_if_fail (filename != NULL, NULL);
 	g_return_val_if_fail (unmanaged != NULL, NULL);
@@ -3119,14 +3231,14 @@ connection_from_file (const char *filename,
 
 	ifcfg_name = utils_get_ifcfg_name (filename, TRUE);
 	if (!ifcfg_name) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (out_error, IFCFG_PLUGIN_ERROR, 0,
 		             "Ignoring connection '%s' because it's not an ifcfg file.", filename);
 		return NULL;
 	}
 
 	parsed = svNewFile (filename);
 	if (!parsed) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (out_error, IFCFG_PLUGIN_ERROR, 0,
 		             "Couldn't parse file '%s'", filename);
 		return NULL;
 	}
@@ -3140,14 +3252,15 @@ connection_from_file (const char *filename,
 		 */
 		device = svGetValue (parsed, "DEVICE", FALSE);
 		if (!device) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (&error, IFCFG_PLUGIN_ERROR, 0,
 			             "File '%s' had neither TYPE nor DEVICE keys.", filename);
 			goto done;
 		}
 
 		if (!strcmp (device, "lo")) {
-			*ignore_error = TRUE;
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			if (ignore_error)
+				*ignore_error = TRUE;
+			g_set_error (&error, IFCFG_PLUGIN_ERROR, 0,
 			             "Ignoring loopback device config.");
 			g_free (device);
 			goto done;
@@ -3182,12 +3295,33 @@ connection_from_file (const char *filename,
 		g_free (lower);
 	}
 
+	/* Ignore BRIDGE= and VLAN= connections for now too (rh #619863) */
+	tmp = svGetValue (parsed, "BRIDGE", FALSE);
+	if (tmp) {
+		g_free (tmp);
+		nm_controlled = FALSE;
+		ignore_reason = IGNORE_REASON_BRIDGE;
+	}
+
+	if (nm_controlled) {
+		tmp = svGetValue (parsed, "VLAN", FALSE);
+		if (tmp) {
+			g_free (tmp);
+			nm_controlled = FALSE;
+			ignore_reason = IGNORE_REASON_VLAN;
+		}
+	}
+
+	/* Construct the connection */
 	if (!strcasecmp (type, TYPE_ETHERNET))
-		connection = wired_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, error);
+		connection = wired_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, &error);
 	else if (!strcasecmp (type, TYPE_WIRELESS))
-		connection = wireless_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, error);
-	else {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		connection = wireless_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, &error);
+	else if (!strcasecmp (type, TYPE_BRIDGE)) {
+		g_set_error (&error, IFCFG_PLUGIN_ERROR, 0,
+		             "Bridge connections are not yet supported");
+	} else {
+		g_set_error (&error, IFCFG_PLUGIN_ERROR, 0,
 		             "Unknown connection type '%s'", type);
 	}
 
@@ -3198,12 +3332,28 @@ connection_from_file (const char *filename,
 
 	g_free (type);
 
-	/* Don't bother reading the connection fully if it's unmanaged */
-	if (!connection || *unmanaged)
+	/* Don't bother reading the connection fully if it's unmanaged or ignored */
+	if (!connection || *unmanaged || ignore_reason) {
+		if (connection && !*unmanaged) {
+			/* However,BRIDGE and VLAN connections that don't have HWADDR won't
+			 * be unmanaged because the unmanaged state is keyed off HWADDR.
+			 * They willl still be tagged 'ignore' from code that checks BRIDGE
+			 * and VLAN above.  Since they aren't marked unmanaged, kill them
+			 * completely.
+			 */
+			if (ignore_reason) {
+				g_object_unref (connection);
+				connection = NULL;
+				g_set_error (&error, IFCFG_PLUGIN_ERROR, 0,
+				             "%s connections are not yet supported",
+				             ignore_reason == IGNORE_REASON_BRIDGE ? "Bridge" : "VLAN");
+			}
+		}
 		goto done;
+	}
 
-	s_ip6 = make_ip6_setting (parsed, network_file, iscsiadm_path, error);
-	if (*error) {
+	s_ip6 = make_ip6_setting (parsed, network_file, iscsiadm_path, &error);
+	if (error) {
 		g_object_unref (connection);
 		connection = NULL;
 		goto done;
@@ -3216,8 +3366,8 @@ connection_from_file (const char *filename,
 			ip6_used = TRUE;
 	}
 
-	s_ip4 = make_ip4_setting (parsed, network_file, iscsiadm_path, ip6_used, error);
-	if (*error) {
+	s_ip4 = make_ip4_setting (parsed, network_file, iscsiadm_path, ip6_used, &error);
+	if (error) {
 		g_object_unref (connection);
 		connection = NULL;
 		goto done;
@@ -3239,7 +3389,7 @@ connection_from_file (const char *filename,
 		g_object_set (G_OBJECT (s_con), NM_SETTING_CONNECTION_READ_ONLY, TRUE, NULL);
 	}
 
-	if (!nm_connection_verify (connection, error)) {
+	if (!nm_connection_verify (connection, &error)) {
 		g_object_unref (connection);
 		connection = NULL;
 	}
@@ -3250,6 +3400,10 @@ connection_from_file (const char *filename,
 
 done:
 	svCloseFile (parsed);
+	if (error && out_error)
+		*out_error = error;
+	else
+		g_clear_error (&error);
 	return connection;
 }
 

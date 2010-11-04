@@ -16,7 +16,7 @@
  * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
- * (C) Copyright 2005 - 2009 Red Hat, Inc.
+ * (C) Copyright 2005 - 2010 Red Hat, Inc.
  * (C) Copyright 2007 Novell, Inc.
  */
 
@@ -535,7 +535,7 @@ detail_vpn (gpointer data, gpointer user_data)
 	g_return_if_fail (connection != NULL);
 
 	s_con = (NMSettingConnection *) nm_connection_get_setting (connection, NM_TYPE_SETTING_CONNECTION);
-	g_return_if_fail (connection != NULL);
+	g_return_if_fail (s_con != NULL);
 
 	print_header ("VPN", NULL, nm_setting_connection_get_id (s_con));
 
@@ -643,8 +643,7 @@ get_connections_for_service (DBusGConnection *bus,
                                 G_TYPE_INVALID,
                                 DBUS_TYPE_G_ARRAY_OF_OBJECT_PATH, &paths,
                                 G_TYPE_INVALID)) {
-		g_warning ("error: failed to read connections from %s:\n    %s",
-		           service, error ? error->message : "(unknown)");
+		/* No connections or settings service may not be running */
 		g_clear_error (&error);
 		goto out;
 	}

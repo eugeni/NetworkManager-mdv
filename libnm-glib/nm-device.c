@@ -18,7 +18,7 @@
  * Boston, MA 02110-1301 USA.
  *
  * Copyright (C) 2007 - 2008 Novell, Inc.
- * Copyright (C) 2007 - 2008 Red Hat, Inc.
+ * Copyright (C) 2007 - 2010 Red Hat, Inc.
  */
 
 #include <string.h>
@@ -49,10 +49,12 @@ typedef struct {
 	DBusGProxy *proxy;
 
 	char *iface;
+	char *ip_iface;
 	char *udi;
 	char *driver;
 	guint32 capabilities;
 	gboolean managed;
+	gboolean firmware_missing;
 	NMIP4Config *ip4_config;
 	gboolean null_ip4_config;
 	NMDHCP4Config *dhcp4_config;
@@ -75,6 +77,7 @@ enum {
 	PROP_DRIVER,
 	PROP_CAPABILITIES,
 	PROP_MANAGED,
+	PROP_FIRMWARE_MISSING,
 	PROP_IP4_CONFIG,
 	PROP_DHCP4_CONFIG,
 	PROP_IP6_CONFIG,
@@ -82,6 +85,7 @@ enum {
 	PROP_PRODUCT,
 	PROP_VENDOR,
 	PROP_DHCP6_CONFIG,
+	PROP_IP_INTERFACE,
 
 	LAST_PROP
 };
@@ -268,15 +272,17 @@ register_for_property_changed (NMDevice *device)
 {
 	NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE (device);
 	const NMPropertiesChangedInfo property_changed_info[] = {
-		{ NM_DEVICE_UDI,          _nm_object_demarshal_generic, &priv->udi },
-		{ NM_DEVICE_INTERFACE,    _nm_object_demarshal_generic, &priv->iface },
-		{ NM_DEVICE_DRIVER,       _nm_object_demarshal_generic, &priv->driver },
-		{ NM_DEVICE_CAPABILITIES, _nm_object_demarshal_generic, &priv->capabilities },
-		{ NM_DEVICE_MANAGED,      _nm_object_demarshal_generic, &priv->managed },
-		{ NM_DEVICE_IP4_CONFIG,   demarshal_ip4_config,         &priv->ip4_config },
-		{ NM_DEVICE_DHCP4_CONFIG, demarshal_dhcp4_config,       &priv->dhcp4_config },
-		{ NM_DEVICE_IP6_CONFIG,   demarshal_ip6_config,         &priv->ip6_config },
-		{ NM_DEVICE_DHCP6_CONFIG, demarshal_dhcp6_config,       &priv->dhcp6_config },
+		{ NM_DEVICE_UDI,              _nm_object_demarshal_generic, &priv->udi },
+		{ NM_DEVICE_INTERFACE,        _nm_object_demarshal_generic, &priv->iface },
+		{ NM_DEVICE_IP_INTERFACE,     _nm_object_demarshal_generic, &priv->ip_iface },
+		{ NM_DEVICE_DRIVER,           _nm_object_demarshal_generic, &priv->driver },
+		{ NM_DEVICE_CAPABILITIES,     _nm_object_demarshal_generic, &priv->capabilities },
+		{ NM_DEVICE_MANAGED,          _nm_object_demarshal_generic, &priv->managed },
+		{ NM_DEVICE_FIRMWARE_MISSING, _nm_object_demarshal_generic, &priv->firmware_missing },
+		{ NM_DEVICE_IP4_CONFIG,       demarshal_ip4_config,         &priv->ip4_config },
+		{ NM_DEVICE_DHCP4_CONFIG,     demarshal_dhcp4_config,       &priv->dhcp4_config },
+		{ NM_DEVICE_IP6_CONFIG,       demarshal_ip6_config,         &priv->ip6_config },
+		{ NM_DEVICE_DHCP6_CONFIG,     demarshal_dhcp6_config,       &priv->dhcp6_config },
 		{ NULL },
 	};
 
@@ -376,6 +382,7 @@ finalize (GObject *object)
 	NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE (object);
 
 	g_free (priv->iface);
+	g_free (priv->ip_iface);
 	g_free (priv->udi);
 	g_free (priv->driver);
 	g_free (priv->product);
@@ -399,6 +406,9 @@ get_property (GObject *object,
 	case PROP_INTERFACE:
 		g_value_set_string (value, nm_device_get_iface (device));
 		break;
+	case PROP_IP_INTERFACE:
+		g_value_set_string (value, nm_device_get_ip_iface (device));
+		break;
 	case PROP_DRIVER:
 		g_value_set_string (value, nm_device_get_driver (device));
 		break;
@@ -407,6 +417,9 @@ get_property (GObject *object,
 		break;
 	case PROP_MANAGED:
 		g_value_set_boolean (value, nm_device_get_managed (device));
+		break;
+	case PROP_FIRMWARE_MISSING:
+		g_value_set_boolean (value, nm_device_get_firmware_missing (device));
 		break;
 	case PROP_IP4_CONFIG:
 		g_value_set_object (value, nm_device_get_ip4_config (device));
@@ -512,6 +525,20 @@ nm_device_class_init (NMDeviceClass *device_class)
 		 g_param_spec_boolean (NM_DEVICE_MANAGED,
 						  "Managed",
 						  "Managed",
+						  FALSE,
+						  G_PARAM_READABLE));
+
+	/**
+	 * NMDevice:firmware-missing:
+	 *
+	 * When %TRUE indicates the device is likely missing firmware required
+	 * for its operation.
+	 **/
+	g_object_class_install_property
+		(object_class, PROP_FIRMWARE_MISSING,
+		 g_param_spec_boolean (NM_DEVICE_FIRMWARE_MISSING,
+						  "FirmwareMissing",
+						  "Firmware missing",
 						  FALSE,
 						  G_PARAM_READABLE));
 
@@ -727,6 +754,33 @@ nm_device_get_iface (NMDevice *device)
 }
 
 /**
+ * nm_device_get_ip_iface:
+ * @device: a #NMDevice
+ *
+ * Gets the IP interface name of the #NMDevice over which IP traffic flows
+ * when the device is in the ACTIVATED state.
+ *
+ * Returns: the IP traffic interface of the device. This is the internal string
+ * used by the device, and must not be modified.
+ **/
+const char *
+nm_device_get_ip_iface (NMDevice *device)
+{
+	NMDevicePrivate *priv;
+
+	g_return_val_if_fail (NM_IS_DEVICE (device), NULL);
+
+	priv = NM_DEVICE_GET_PRIVATE (device);
+	if (!priv->ip_iface) {
+		priv->ip_iface = _nm_object_get_string_property (NM_OBJECT (device),
+		                                                 NM_DBUS_INTERFACE_DEVICE,
+		                                                 "IpInterface");
+	}
+
+	return priv->ip_iface;
+}
+
+/**
  * nm_device_get_udi:
  * @device: a #NMDevice
  *
@@ -827,6 +881,33 @@ nm_device_get_managed (NMDevice *device)
 	}
 
 	return priv->managed;
+}
+
+/**
+ * nm_device_get_firmware_missing:
+ * @device: a #NMDevice
+ *
+ * Indicates that firmware required for the device's operation is likely
+ * to be missing.
+ *
+ * Returns: %TRUE if firmware required for the device's operation is likely
+ * to be missing.
+ **/
+gboolean
+nm_device_get_firmware_missing (NMDevice *device)
+{
+	NMDevicePrivate *priv;
+
+	g_return_val_if_fail (NM_IS_DEVICE (device), 0);
+
+	priv = NM_DEVICE_GET_PRIVATE (device);
+	if (!priv->firmware_missing) {
+		priv->firmware_missing = _nm_object_get_boolean_property (NM_OBJECT (device),
+		                                                          NM_DBUS_INTERFACE_DEVICE,
+		                                                          "FirmwareMissing");
+	}
+
+	return priv->firmware_missing;
 }
 
 /**
@@ -1084,7 +1165,7 @@ nm_device_update_description (NMDevice *device)
 	 * vendor and device ID information off it.
 	 */
 
-	/* Ref the device again becuase we have to unref it each iteration,
+	/* Ref the device again because we have to unref it each iteration,
 	 * as g_udev_device_get_parent() returns a ref-ed object.
 	 */
 	tmpdev = g_object_ref (udev_device);

@@ -90,7 +90,7 @@ write_secret_file (const char *path,
 
 	tmppath = g_malloc0 (strlen (path) + 10);
 	if (!tmppath) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not allocate memory for temporary file for '%s'",
 		             path);
 		return FALSE;
@@ -102,7 +102,7 @@ write_secret_file (const char *path,
 	errno = 0;
 	fd = mkstemp (tmppath);
 	if (fd < 0) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not create temporary file for '%s': %d",
 		             path, errno);
 		goto out;
@@ -113,7 +113,7 @@ write_secret_file (const char *path,
 	if (fchmod (fd, S_IRUSR | S_IWUSR)) {
 		close (fd);
 		unlink (tmppath);
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not set permissions for temporary file '%s': %d",
 		             path, errno);
 		goto out;
@@ -124,7 +124,7 @@ write_secret_file (const char *path,
 	if (written != len) {
 		close (fd);
 		unlink (tmppath);
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not write temporary file for '%s': %d",
 		             path, errno);
 		goto out;
@@ -135,7 +135,7 @@ write_secret_file (const char *path,
 	errno = 0;
 	if (rename (tmppath, path)) {
 		unlink (tmppath);
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not rename temporary file to '%s': %d",
 		             path, errno);
 		goto out;
@@ -302,7 +302,7 @@ write_object (NMSetting8021x *s_8021x,
 
 		new_file = utils_cert_path (ifcfg->fileName, objtype->suffix);
 		if (!new_file) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Could not create file path for %s / %s",
 			             NM_SETTING_802_1X_SETTING_NAME, objtype->setting_key);
 			return FALSE;
@@ -317,7 +317,7 @@ write_object (NMSetting8021x *s_8021x,
 			svSetValue (ifcfg, objtype->ifcfg_key, new_file, FALSE);
 			return TRUE;
 		} else {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Could not write certificate/key for %s / %s: %s",
 			             NM_SETTING_802_1X_SETTING_NAME, objtype->setting_key,
 			             (write_error && write_error->message) ? write_error->message : "(unknown)");
@@ -535,7 +535,7 @@ write_wireless_security_setting (NMConnection *connection,
 
 	s_wsec = (NMSettingWirelessSecurity *) nm_connection_get_setting (connection, NM_TYPE_SETTING_WIRELESS_SECURITY);
 	if (!s_wsec) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing '%s' setting", NM_SETTING_WIRELESS_SECURITY_SETTING_NAME);
 		return FALSE;
 	}
@@ -704,7 +704,7 @@ write_wireless_setting (NMConnection *connection,
 {
 	NMSettingWireless *s_wireless;
 	char *tmp, *tmp2;
-	const GByteArray *ssid, *mac, *bssid;
+	const GByteArray *ssid, *device_mac, *cloned_mac, *bssid;
 	const char *mode;
 	char buf[33];
 	guint32 mtu, chan, i;
@@ -712,18 +712,28 @@ write_wireless_setting (NMConnection *connection,
 
 	s_wireless = (NMSettingWireless *) nm_connection_get_setting (connection, NM_TYPE_SETTING_WIRELESS);
 	if (!s_wireless) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing '%s' setting", NM_SETTING_WIRELESS_SETTING_NAME);
 		return FALSE;
 	}
 
 	svSetValue (ifcfg, "HWADDR", NULL, FALSE);
-	mac = nm_setting_wireless_get_mac_address (s_wireless);
-	if (mac) {
+	device_mac = nm_setting_wireless_get_mac_address (s_wireless);
+	if (device_mac) {
 		tmp = g_strdup_printf ("%02X:%02X:%02X:%02X:%02X:%02X",
-		                       mac->data[0], mac->data[1], mac->data[2],
-		                       mac->data[3], mac->data[4], mac->data[5]);
+		                       device_mac->data[0], device_mac->data[1], device_mac->data[2],
+		                       device_mac->data[3], device_mac->data[4], device_mac->data[5]);
 		svSetValue (ifcfg, "HWADDR", tmp, FALSE);
+		g_free (tmp);
+	}
+
+	svSetValue (ifcfg, "MACADDR", NULL, FALSE);
+	cloned_mac = nm_setting_wireless_get_cloned_mac_address (s_wireless);
+	if (cloned_mac) {
+		tmp = g_strdup_printf ("%02X:%02X:%02X:%02X:%02X:%02X",
+		                       cloned_mac->data[0], cloned_mac->data[1], cloned_mac->data[2],
+		                       cloned_mac->data[3], cloned_mac->data[4], cloned_mac->data[5]);
+		svSetValue (ifcfg, "MACADDR", tmp, FALSE);
 		g_free (tmp);
 	}
 
@@ -737,12 +747,12 @@ write_wireless_setting (NMConnection *connection,
 
 	ssid = nm_setting_wireless_get_ssid (s_wireless);
 	if (!ssid) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing SSID in '%s' setting", NM_SETTING_WIRELESS_SETTING_NAME);
 		return FALSE;
 	}
 	if (!ssid->len || ssid->len > 32) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Invalid SSID in '%s' setting", NM_SETTING_WIRELESS_SETTING_NAME);
 		return FALSE;
 	}
@@ -792,7 +802,7 @@ write_wireless_setting (NMConnection *connection,
 		svSetValue (ifcfg, "MODE", "Ad-Hoc", FALSE);
 		adhoc = TRUE;
 	} else {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Invalid mode '%s' in '%s' setting",
 		             mode, NM_SETTING_WIRELESS_SETTING_NAME);
 		return FALSE;
@@ -830,23 +840,36 @@ static gboolean
 write_wired_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 {
 	NMSettingWired *s_wired;
-	const GByteArray *mac;
+	const GByteArray *device_mac, *cloned_mac;
 	char *tmp;
-	guint32 mtu;
+	const char *nettype, *portname, *s390_key, *s390_val;
+	guint32 mtu, num_opts, i;
+	const GPtrArray *s390_subchannels;
+	GString *str;
 
 	s_wired = (NMSettingWired *) nm_connection_get_setting (connection, NM_TYPE_SETTING_WIRED);
 	if (!s_wired) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing '%s' setting", NM_SETTING_WIRED_SETTING_NAME);
 		return FALSE;
 	}
 
-	mac = nm_setting_wired_get_mac_address (s_wired);
-	if (mac) {
+	svSetValue (ifcfg, "HWADDR", NULL, FALSE);
+	device_mac = nm_setting_wired_get_mac_address (s_wired);
+	if (device_mac) {
 		tmp = g_strdup_printf ("%02X:%02X:%02X:%02X:%02X:%02X",
-		                       mac->data[0], mac->data[1], mac->data[2],
-		                       mac->data[3], mac->data[4], mac->data[5]);
+		                       device_mac->data[0], device_mac->data[1], device_mac->data[2],
+		                       device_mac->data[3], device_mac->data[4], device_mac->data[5]);
 		svSetValue (ifcfg, "HWADDR", tmp, FALSE);
+		g_free (tmp);
+	}
+
+	cloned_mac = nm_setting_wired_get_cloned_mac_address (s_wired);
+	if (cloned_mac) {
+		tmp = g_strdup_printf ("%02X:%02X:%02X:%02X:%02X:%02X",
+		                       cloned_mac->data[0], cloned_mac->data[1], cloned_mac->data[2],
+		                       cloned_mac->data[3], cloned_mac->data[4], cloned_mac->data[5]);
+		svSetValue (ifcfg, "MACADDR", tmp, FALSE);
 		g_free (tmp);
 	}
 
@@ -856,6 +879,53 @@ write_wired_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		tmp = g_strdup_printf ("%u", mtu);
 		svSetValue (ifcfg, "MTU", tmp, FALSE);
 		g_free (tmp);
+	}
+
+	svSetValue (ifcfg, "SUBCHANNELS", NULL, FALSE);
+	s390_subchannels = nm_setting_wired_get_s390_subchannels (s_wired);
+	if (s390_subchannels) {
+	    if (s390_subchannels->len == 2) {
+			tmp = g_strdup_printf ("%s,%s",
+				                   (const char *) g_ptr_array_index (s390_subchannels, 0),
+				                   (const char *) g_ptr_array_index (s390_subchannels, 1));
+	    } else if (s390_subchannels->len == 3) {
+			tmp = g_strdup_printf ("%s,%s,%s",
+				                   (const char *) g_ptr_array_index (s390_subchannels, 0),
+				                   (const char *) g_ptr_array_index (s390_subchannels, 1),
+				                   (const char *) g_ptr_array_index (s390_subchannels, 2));
+		}
+		svSetValue (ifcfg, "SUBCHANNELS", tmp, FALSE);
+		g_free (tmp);
+	}
+
+	svSetValue (ifcfg, "NETTYPE", NULL, FALSE);
+	nettype = nm_setting_wired_get_s390_nettype (s_wired);
+	if (nettype)
+		svSetValue (ifcfg, "NETTYPE", nettype, FALSE);
+
+	svSetValue (ifcfg, "PORTNAME", NULL, FALSE);
+	portname = nm_setting_wired_get_s390_option_by_key (s_wired, "portname");
+	if (portname)
+		svSetValue (ifcfg, "PORTNAME", portname, FALSE);
+
+	svSetValue (ifcfg, "OPTIONS", NULL, FALSE);
+	num_opts = nm_setting_wired_get_num_s390_options (s_wired);
+	if (s390_subchannels && num_opts) {
+		str = g_string_sized_new (30);
+		for (i = 0; i < num_opts; i++) {
+			nm_setting_wired_get_s390_option (s_wired, i, &s390_key, &s390_val);
+
+			/* portname is handled separately */
+			if (!strcmp (s390_key, "portname"))
+				continue;
+
+			if (str->len)
+				g_string_append_c (str, ' ');
+			g_string_append_printf (str, "%s=%s", s390_key, s390_val);
+		}
+		if (str->len)
+			svSetValue (ifcfg, "OPTIONS", str->str, FALSE);
+		g_string_free (str, TRUE);
 	}
 
 	svSetValue (ifcfg, "TYPE", TYPE_ETHERNET, FALSE);
@@ -928,7 +998,7 @@ write_route_file_legacy (const char *filename, NMSettingIP4Config *s_ip4, GError
 	g_strfreev (route_items);
 
 	if (!g_file_set_contents (filename, route_contents, -1, NULL)) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Writing route file '%s' failed", filename);
 		goto error;
 	}
@@ -951,6 +1021,7 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	guint32 i, num;
 	GString *searches;
 	gboolean success = FALSE;
+	gboolean fake_ip4 = FALSE;
 	const char *method = NULL;
 
 	s_ip4 = (NMSettingIP4Config *) nm_connection_get_setting (connection, NM_TYPE_SETTING_IP4_CONFIG);
@@ -988,15 +1059,19 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		return TRUE;
 	}
 
-	value = nm_setting_ip4_config_get_method (s_ip4);
-	g_assert (value);
-	if (!strcmp (value, NM_SETTING_IP4_CONFIG_METHOD_AUTO))
+	/* Temporarily create fake IP4 setting if missing; method set to DHCP above */
+	if (!s_ip4) {
+		s_ip4 = (NMSettingIP4Config *) nm_setting_ip4_config_new ();
+		fake_ip4 = TRUE;
+	}
+
+	if (!strcmp (method, NM_SETTING_IP4_CONFIG_METHOD_AUTO))
 		svSetValue (ifcfg, "BOOTPROTO", "dhcp", FALSE);
-	else if (!strcmp (value, NM_SETTING_IP4_CONFIG_METHOD_MANUAL))
+	else if (!strcmp (method, NM_SETTING_IP4_CONFIG_METHOD_MANUAL))
 		svSetValue (ifcfg, "BOOTPROTO", "none", FALSE);
-	else if (!strcmp (value, NM_SETTING_IP4_CONFIG_METHOD_LINK_LOCAL))
+	else if (!strcmp (method, NM_SETTING_IP4_CONFIG_METHOD_LINK_LOCAL))
 		svSetValue (ifcfg, "BOOTPROTO", "autoip", FALSE);
-	else if (!strcmp (value, NM_SETTING_IP4_CONFIG_METHOD_SHARED))
+	else if (!strcmp (method, NM_SETTING_IP4_CONFIG_METHOD_SHARED))
 		svSetValue (ifcfg, "BOOTPROTO", "shared", FALSE);
 
 	num = nm_setting_ip4_config_get_num_addresses (s_ip4);
@@ -1086,7 +1161,7 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	svSetValue (ifcfg, "PEERROUTES", NULL, FALSE);
 	svSetValue (ifcfg, "DHCP_HOSTNAME", NULL, FALSE);
 	svSetValue (ifcfg, "DHCP_CLIENT_ID", NULL, FALSE);
-	if (!strcmp (value, NM_SETTING_IP4_CONFIG_METHOD_AUTO)) {
+	if (!strcmp (method, NM_SETTING_IP4_CONFIG_METHOD_AUTO)) {
 		svSetValue (ifcfg, "PEERDNS",
 		            nm_setting_ip4_config_get_ignore_auto_dns (s_ip4) ? "no" : "yes",
 		            FALSE);
@@ -1111,7 +1186,7 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	/* Static routes - route-<name> file */
 	route_path = utils_get_route_path (ifcfg->fileName);
 	if (!route_path) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not get route file path for '%s'", ifcfg->fileName);
 		goto out;
 	}
@@ -1122,7 +1197,7 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		g_free (route_path);
 		routefile = utils_get_route_ifcfg (ifcfg->fileName, TRUE);
 		if (!routefile) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Could not create route file '%s'", routefile->fileName);
 			goto out;
 		}
@@ -1178,7 +1253,7 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 			g_free (metric_key);
 		}
 		if (svWriteFile (routefile, 0644)) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Could not update route file '%s'", routefile->fileName);
 			svCloseFile (routefile);
 			goto out;
@@ -1194,6 +1269,9 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	success = TRUE;
 
 out:
+	if (fake_ip4)
+		g_object_unref (s_ip4);
+
 	return success;
 }
 
@@ -1244,7 +1322,7 @@ write_route6_file (const char *filename, NMSettingIP6Config *s_ip6, GError **err
 	g_strfreev (route_items);
 
 	if (!g_file_set_contents (filename, route_contents, -1, NULL)) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Writing route6 file '%s' failed", filename);
 		goto error;
 	}
@@ -1273,7 +1351,7 @@ write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 
 	s_ip6 = (NMSettingIP6Config *) nm_connection_get_setting (connection, NM_TYPE_SETTING_IP6_CONFIG);
 	if (!s_ip6) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing '%s' setting", NM_SETTING_IP6_CONFIG_SETTING_NAME);
 		return FALSE;
 	}
@@ -1288,6 +1366,10 @@ write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		svSetValue (ifcfg, "IPV6INIT", "yes", FALSE);
 		svSetValue (ifcfg, "IPV6_AUTOCONF", "yes", FALSE);
 		svSetValue (ifcfg, "DHCPV6C", NULL, FALSE);
+	} else if (!strcmp (value, NM_SETTING_IP6_CONFIG_METHOD_DHCP)) {
+		svSetValue (ifcfg, "IPV6INIT", "yes", FALSE);
+		svSetValue (ifcfg, "IPV6_AUTOCONF", "no", FALSE);
+		svSetValue (ifcfg, "DHCPV6C", "yes", FALSE);
 	} else if (!strcmp (value, NM_SETTING_IP6_CONFIG_METHOD_MANUAL)) {
 		svSetValue (ifcfg, "IPV6INIT", "yes", FALSE);
 		svSetValue (ifcfg, "IPV6_AUTOCONF", "no", FALSE);
@@ -1397,7 +1479,7 @@ write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	/* Static routes go to route6-<dev> file */
 	route6_path = utils_get_route6_path (ifcfg->fileName);
 	if (!route6_path) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not get route6 file path for '%s'", ifcfg->fileName);
 		goto error;
 	}
@@ -1451,7 +1533,7 @@ write_connection (NMConnection *connection,
 
 	s_con = NM_SETTING_CONNECTION (nm_connection_get_setting (connection, NM_TYPE_SETTING_CONNECTION));
 	if (!s_con) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing '%s' setting", NM_SETTING_CONNECTION_SETTING_NAME);
 		return FALSE;
 	}
@@ -1470,14 +1552,14 @@ write_connection (NMConnection *connection,
 	}
 
 	if (!ifcfg) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Failed to open/create ifcfg file '%s'", ifcfg_name);
 		goto out;
 	}
 
 	type = nm_setting_connection_get_connection_type (s_con);
 	if (!type) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing connection type!");
 		goto out;
 	}
@@ -1485,7 +1567,7 @@ write_connection (NMConnection *connection,
 	if (!strcmp (type, NM_SETTING_WIRED_SETTING_NAME)) {
 		// FIXME: can't write PPPoE at this time
 		if (nm_connection_get_setting (connection, NM_TYPE_SETTING_PPPOE)) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Can't write connection type '%s'",
 			             NM_SETTING_PPPOE_SETTING_NAME);
 			goto out;
@@ -1498,7 +1580,7 @@ write_connection (NMConnection *connection,
 		if (!write_wireless_setting (connection, ifcfg, &no_8021x, error))
 			goto out;
 	} else {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Can't write connection type '%s'", type);
 		goto out;
 	}
@@ -1520,7 +1602,7 @@ write_connection (NMConnection *connection,
 	write_connection_setting (s_con, ifcfg);
 
 	if (svWriteFile (ifcfg, 0644)) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Can't write connection '%s'", ifcfg->fileName);
 		goto out;
 	}

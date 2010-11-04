@@ -1,7 +1,8 @@
 AC_PREREQ(2.52)
 
-AC_INIT(NetworkManager, 0.8.1, dcbw@redhat.com, NetworkManager)
+AC_INIT(NetworkManager, 0.8.1.999, dcbw@redhat.com, NetworkManager)
 AM_INIT_AUTOMAKE([1.9 subdir-objects tar-ustar no-dist-gzip dist-bzip2])
+m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([no])])
 AM_MAINTAINER_MODE
 
 AC_CONFIG_MACRO_DIR([m4])
@@ -83,7 +84,7 @@ dnl Make sha1.c happy on big endian systems
 dnl
 AC_C_BIGENDIAN
 
-AC_ARG_WITH(distro, AS_HELP_STRING([--with-distro=DISTRO], [Specify the Linux distribution to target: One of redhat, suse, gentoo, debian, arch, slackware, paldo, mandriva or pardus]))
+AC_ARG_WITH(distro, AS_HELP_STRING([--with-distro=DISTRO], [Specify the Linux distribution to target: One of redhat, suse, gentoo, debian, arch, slackware, paldo, mandriva, pardus or linexa]))
 if test "z$with_distro" = "z"; then
 	AC_CHECK_FILE(/etc/redhat-release,with_distro="redhat")
 	AC_CHECK_FILE(/etc/SuSE-release,with_distro="suse")
@@ -95,6 +96,7 @@ if test "z$with_distro" = "z"; then
 	AC_CHECK_FILE(/etc/frugalware-release,with_distro="frugalware")
 	AC_CHECK_FILE(/etc/mandriva-release,with_distro="mandriva")
 	AC_CHECK_FILE(/etc/pardus-release,with_distro="pardus")
+	AC_CHECK_FILE(/etc/linexa-release,with_distro="linexa")
 	if test "z$with_distro" = "z"; then
 		with_distro=`lsb_release -is`
 	fi
@@ -106,7 +108,7 @@ if test "z$with_distro" = "z"; then
 	exit 1
 else
 	case $with_distro in
-		redhat|suse|gentoo|debian|slackware|arch|paldo|frugalware|mandriva|pardus) ;;
+		redhat|suse|gentoo|debian|slackware|arch|paldo|frugalware|mandriva|pardus|linexa) ;;
 		*)
 			echo "Your distribution (${with_distro}) is not yet supported!  (patches welcome)"
 			exit 1
@@ -164,6 +166,11 @@ if test x"$with_distro" = xpardus; then
   AC_DEFINE(TARGET_PARDUS, 1, [Define if you have Pardus])
 fi
 
+AM_CONDITIONAL(TARGET_LINEXA, test x"$with_distro" = xlinexa)
+if test x"$with_distro" = xlinexa; then
+  AC_DEFINE(TARGET_LINEXA, 1, [Define if you have linexa])
+fi
+
 dnl
 dnl Distribution version string
 dnl
@@ -202,6 +209,12 @@ dnl
 AC_CHECK_LIB([dl], [dladdr], LIBDL="-ldl", LIBDL="")
 AC_SUBST(LIBDL)
 
+dnl
+dnl Checks for new dbus-glib property access function
+dnl
+AC_CHECK_LIB([dbus-glib-1], [dbus_glib_global_set_disable_legacy_property_access], ac_have_dg_prop="1", ac_have_dg_prop="0")
+AC_DEFINE_UNQUOTED(HAVE_DBUS_GLIB_DISABLE_LEGACY_PROP_ACCESS, $ac_have_dg_prop, [Define if you have a dbus-glib with dbus_glib_global_set_disable_legacy_property_access()])
+
 PKG_CHECK_MODULES(DBUS, dbus-1 >= 1.1 dbus-glib-1 >= 0.75)
 AC_SUBST(DBUS_CFLAGS)
 AC_SUBST(DBUS_LIBS)
@@ -230,6 +243,16 @@ else
 fi
 AC_SUBST(UDEV_BASE_DIR)
 
+# systemd
+AC_ARG_WITH([systemdsystemunitdir],
+ AS_HELP_STRING([--with-systemdsystemunitdir=DIR], [Directory for systemd service files]),
+ [],
+ [with_systemdsystemunitdir=$($PKG_CONFIG --variable=systemdsystemunitdir systemd)])
+if test "x$with_systemdsystemunitdir" != xno; then
+	AC_SUBST([systemdsystemunitdir], [$with_systemdsystemunitdir])
+fi
+AM_CONDITIONAL(HAVE_SYSTEMD, [test -n "$with_systemdsystemunitdir" -a "x$with_systemdsystemunitdir" != xno ])
+
 PKG_CHECK_MODULES(LIBNL, libnl-1 >= 1.0-pre8)
 AC_SUBST(LIBNL_CFLAGS)
 AC_SUBST(LIBNL_LIBS)
@@ -240,8 +263,11 @@ AC_SUBST(UUID_CFLAGS)
 AC_SUBST(UUID_LIBS)
 
 PKG_CHECK_MODULES(POLKIT, polkit-gobject-1)
-
 AC_SUBST(POLKIT_CFLAGS)
+
+# Check for polkit_authority_get_sync()
+AC_CHECK_LIB([polkit-gobject-1], [polkit_authority_get_sync], ac_have_pk_auth_get_sync="1", ac_have_pk_auth_get_sync="0")
+AC_DEFINE_UNQUOTED(HAVE_POLKIT_AUTHORITY_GET_SYNC, $ac_have_pk_auth_get_sync, [Define if you have a polkit with polkit_authority_get_sync()])
 
 AC_ARG_WITH(crypto, AS_HELP_STRING([--with-crypto=nss | gnutls], [Cryptography library to use for certificate and key operations]),ac_crypto=$withval, ac_crypto=nss)
 
@@ -304,21 +330,30 @@ AC_SUBST(PPPD_PLUGIN_DIR)
 AC_ARG_WITH([dhclient], AS_HELP_STRING([--with-dhclient=yes|no|path], [Enable dhclient 4.x support]))
 # If a full path is given, use that and do not test if it works or not.
 case "${with_dhclient}" in
+	# NM only works with ISC dhclient - other derivatives don't have
+	# the same userland.  dhclient 4.x is required for IPv6 support;
+	# with older versions NM won't be able to use DHCPv6.
+
 	/*)
 		DHCLIENT_PATH="${with_dhclient}"
+		DHCLIENT_VERSION=4
+		if test -x "${with_dhclient}"; then
+			case `"${with_dhclient}" --version 2>&1` in
+				"isc-dhclient-4"*) DHCLIENT_VERSION=4; break;;
+				"isc-dhclient-V3"*) DHCLIENT_VERSION=3; break;;
+			esac
+		fi
 		AC_MSG_NOTICE(using dhclient at ${DHCLIENT_PATH})
 		;;
 	no)	AC_MSG_NOTICE(dhclient support disabled)
 		;;
 	*)
 		AC_MSG_CHECKING(for dhclient)
-		# NM only works with ISC dhclient - other derivatives don't have
-		# the same userland.  NM also requires dhclient 4.x since older
-		# versions do not have IPv6 support.
 		for path in /sbin /usr/sbin /usr/pkg/sbin /usr/local/sbin; do
 			test -x "${path}/dhclient" || continue
 			case `"$path/dhclient" --version 2>&1` in
-				"isc-dhclient-4"*) DHCLIENT_PATH="$path/dhclient"; break;;
+				"isc-dhclient-4"*) DHCLIENT_PATH="$path/dhclient"; DHCLIENT_VERSION=4; break;;
+				"isc-dhclient-V3"*) DHCLIENT_PATH="$path/dhclient"; DHCLIENT_VERSION=3; break;;
 			esac
 		done
 		if test -n "${DHCLIENT_PATH}"; then
@@ -343,10 +378,10 @@ case "${with_dhcpcd}" in
 		AC_MSG_CHECKING(for dhcpcd)
 		# We fully work with upstream dhcpcd-4
 		for path in /sbin /usr/sbin /usr/pkg/sbin /usr/local/sbin; do
-			test -x "${path}/dhclient" || continue
+			test -x "${path}/dhcpcd" || continue
 			case `"$path/dhcpcd" --version 2>/dev/null` in
 				"dhcpcd "[123]*);;
-				"dhcpcd "*) DHCP_CLIENT_PATH="$path/dhcpcd"; break;;
+				"dhcpcd "*) DHCPCD_PATH="$path/dhcpcd"; break;;
 			esac
 		done
 		if test -n "${DHCPCD_PATH}"; then
@@ -363,9 +398,10 @@ if test -z "$DHCPCD_PATH" -a -z "$DHCLIENT_PATH"; then
 	# in most distros, so use it.
 	AC_MSG_WARN([Could not find a suitable DHCP client])
 	DHCLIENT_PATH=/sbin/dhclient
-	AC_MSG_WARN([Falling back to ISC dhclient, ${DHCP_CLIENT_PATH}])
+	AC_MSG_WARN([Falling back to ISC dhclient, ${DHCLIENT_PATH}])
 fi
 AC_SUBST(DHCLIENT_PATH)
+AC_SUBST(DHCLIENT_VERSION)
 AC_SUBST(DHCPCD_PATH)
 
 # resolvconf support
@@ -423,6 +459,16 @@ fi
 AC_DEFINE_UNQUOTED(SYSTEM_CA_PATH, "$SYSTEM_CA_PATH", [Define to path to system CA certificates])
 AC_SUBST(SYSTEM_CA_PATH)
 
+AC_ARG_WITH(kernel-firmware-dir, AS_HELP_STRING([--with-kernel-firmware-dir=DIR], [where kernel firmware directory is (default is /lib/firmware)]))
+
+if test -n "$with_kernel_firmware_dir" ; then
+    KERNEL_FIRMWARE_DIR="$with_kernel_firmware_dir"
+else
+    KERNEL_FIRMWARE_DIR="/lib/firmware"
+fi
+AC_DEFINE_UNQUOTED(KERNEL_FIRMWARE_DIR, "$KERNEL_FIRMWARE_DIR", [Define to path of the kernel firmware directory])
+AC_SUBST(KERNEL_FIRMWARE_DIR)
+
 NM_COMPILER_WARNINGS
 
 GTK_DOC_CHECK(1.0)
@@ -449,7 +495,7 @@ src/Makefile
 src/tests/Makefile
 marshallers/Makefile
 src/logging/Makefile
-src/named-manager/Makefile
+src/dns-manager/Makefile
 src/vpn-manager/Makefile
 src/dhcp-manager/Makefile
 src/ip6-manager/Makefile
@@ -473,13 +519,15 @@ tools/Makefile
 system-settings/Makefile
 system-settings/plugins/Makefile
 system-settings/plugins/ifupdown/Makefile
+system-settings/plugins/ifupdown/tests/Makefile
+system-settings/plugins/ifnet/Makefile
+system-settings/plugins/ifnet/tests/Makefile
 system-settings/plugins/ifcfg-rh/Makefile
 system-settings/plugins/ifcfg-rh/tests/Makefile
 system-settings/plugins/ifcfg-rh/tests/network-scripts/Makefile
 system-settings/plugins/ifcfg-mdv/Makefile
 system-settings/plugins/ifcfg-suse/Makefile
 system-settings/plugins/keyfile/Makefile
-system-settings/plugins/keyfile/io/Makefile
 system-settings/plugins/keyfile/tests/Makefile
 system-settings/plugins/keyfile/tests/keyfiles/Makefile
 cli/Makefile
@@ -502,15 +550,19 @@ initscript/paldo/Makefile
 initscript/paldo/NetworkManager
 initscript/Mandriva/Makefile
 initscript/Mandriva/networkmanager
+initscript/linexa/Makefile
+initscript/linexa/networkmanager
 introspection/Makefile
 man/Makefile
 man/NetworkManager.8
 man/NetworkManager.conf.5
 man/nm-system-settings.conf.5
 man/nm-tool.1
+man/nm-online.1
 man/nmcli.1
 po/Makefile.in
 policy/Makefile
+data/Makefile
 docs/Makefile
 docs/libnm-glib/Makefile
 docs/libnm-util/Makefile
@@ -528,6 +580,7 @@ echo
 
 if test -n "${DHCLIENT_PATH}"; then
 	echo ISC dhclient support: ${DHCLIENT_PATH}
+	echo ISC dhclient version: ${DHCLIENT_VERSION}
 else
 	echo ISC dhclient support: no
 fi
@@ -536,6 +589,12 @@ if test -n "${DHCPCD_PATH}"; then
 	echo dhcpcd support: ${DHCPCD_PATH}
 else
 	echo dhcpcd support: no
+fi
+
+if test -n "${with_systemdsystemunitdir}"; then
+	echo systemd support: ${with_systemdsystemunitdir}
+else
+	echo systemd support: no
 fi
 
 echo

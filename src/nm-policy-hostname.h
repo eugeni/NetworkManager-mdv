@@ -24,7 +24,10 @@
 
 #include <glib.h>
 
-gboolean nm_policy_set_system_hostname (const char *new_hostname, const char *msg);
+gboolean nm_policy_set_system_hostname (const char *new_hostname,
+                                        const char *ip4_addr,
+                                        const char *ip6_addr,
+                                        const char *msg);
 
 
 typedef struct HostnameThread HostnameThread;
@@ -34,9 +37,13 @@ typedef void (*HostnameThreadCallback) (HostnameThread *ht,
                                         const char *hostname,
                                         gpointer user_data);
 
-HostnameThread * hostname_thread_new (guint32 ip4_addr,
-                                      HostnameThreadCallback callback,
-                                      gpointer user_data);
+HostnameThread * hostname4_thread_new (guint32 ip4_addr,
+                                       HostnameThreadCallback callback,
+                                       gpointer user_data);
+
+HostnameThread * hostname6_thread_new (const struct in6_addr *ip6_addr,
+                                       HostnameThreadCallback callback,
+                                       gpointer user_data);
 
 void             hostname_thread_free (HostnameThread *ht);
 

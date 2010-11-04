@@ -85,7 +85,7 @@ test_read_valid_wired_connection (void)
 	NMIP6Address *ip6_addr;
 	NMIP6Route *ip6_route;
 
-	connection = connection_from_file (TEST_WIRED_FILE);
+	connection = connection_from_file (TEST_WIRED_FILE, NULL);
 	ASSERT (connection != NULL,
 			"connection-read", "failed to read %s", TEST_WIRED_FILE);
 
@@ -587,7 +587,7 @@ test_write_wired_connection (void)
 	const char *address2_gw = "1.2.1.1";
 	const char *route1 = "10.10.10.2";
 	const char *route1_nh = "10.10.10.1";
-	const char *route2 = "0.0.0.0";
+	const char *route2 = "1.1.1.1";
 	const char *route2_nh = "1.2.1.1";
 	const char *dns6_1 = "1::cafe";
 	const char *dns6_2 = "2::cafe";
@@ -595,7 +595,7 @@ test_write_wired_connection (void)
 	const char *address6_2 = "dcba::beef";
 	const char *route6_1 = "1:2:3:4:5:6:7:8";
 	const char *route6_1_nh = "8:7:6:5:4:3:2:1";
-	const char *route6_2 = "::";
+	const char *route6_2 = "2001::1000";
 	const char *route6_2_nh = "2001::1111";
 	guint64 timestamp = 0x12345678L;
 
@@ -704,7 +704,7 @@ test_write_wired_connection (void)
 			"connection-write", "didn't get keyfile name back after writing connection");
 
 	/* Read the connection back in and compare it to the one we just wrote out */
-	reread = connection_from_file (testfile);
+	reread = connection_from_file (testfile, NULL);
 	ASSERT (reread != NULL, "connection-write", "failed to re-read test connection");
 
 	ASSERT (nm_connection_compare (connection, reread, NM_SETTING_COMPARE_FLAG_EXACT) == TRUE,
@@ -737,7 +737,7 @@ test_read_ip6_wired_connection (void)
 	const char *expected6_gw1 = "abcd:1234:ffff::cdd1";
 	NMIP6Address *ip6_addr;
 
-	connection = connection_from_file (TEST_WIRED_IP6_FILE);
+	connection = connection_from_file (TEST_WIRED_IP6_FILE, NULL);
 	ASSERT (connection != NULL,
 			"connection-read", "failed to read %s", TEST_WIRED_IP6_FILE);
 
@@ -964,7 +964,7 @@ test_write_ip6_wired_connection (void)
 			"connection-write", "didn't get keyfile name back after writing connection");
 
 	/* Read the connection back in and compare it to the one we just wrote out */
-	reread = connection_from_file (testfile);
+	reread = connection_from_file (testfile, NULL);
 	ASSERT (reread != NULL, "connection-write", "failed to re-read test connection");
 
 	ASSERT (nm_connection_compare (connection, reread, NM_SETTING_COMPARE_FLAG_EXACT) == TRUE,
@@ -993,7 +993,7 @@ test_read_wired_mac_case (void)
 	const char *expected_id = "Test Wired Connection MAC Case";
 	const char *expected_uuid = "4e80a56d-c99f-4aad-a6dd-b449bc398c57";
 
-	connection = connection_from_file (TEST_WIRED_MAC_CASE_FILE);
+	connection = connection_from_file (TEST_WIRED_MAC_CASE_FILE, NULL);
 	ASSERT (connection != NULL,
 			"connection-read", "failed to read %s", TEST_WIRED_MAC_CASE_FILE);
 
@@ -1079,7 +1079,7 @@ test_read_valid_wireless_connection (void)
 	const guint64 expected_timestamp = 1226604314;
 	guint64 timestamp;
 
-	connection = connection_from_file (TEST_WIRELESS_FILE);
+	connection = connection_from_file (TEST_WIRELESS_FILE, NULL);
 	ASSERT (connection != NULL,
 			"connection-read", "failed to read %s", TEST_WIRELESS_FILE);
 
@@ -1282,7 +1282,150 @@ test_write_wireless_connection (void)
 			"connection-write", "didn't get keyfile name back after writing connection");
 
 	/* Read the connection back in and compare it to the one we just wrote out */
-	reread = connection_from_file (testfile);
+	reread = connection_from_file (testfile, NULL);
+	ASSERT (reread != NULL, "connection-write", "failed to re-read test connection");
+
+	ASSERT (nm_connection_compare (connection, reread, NM_SETTING_COMPARE_FLAG_EXACT) == TRUE,
+			"connection-write", "written and re-read connection weren't the same");
+
+	g_clear_error (&error);
+	unlink (testfile);
+	g_free (testfile);
+
+	g_object_unref (reread);
+	g_object_unref (connection);
+}
+
+#define TEST_STRING_SSID_FILE TEST_KEYFILES_DIR"/Test_String_SSID"
+
+static void
+test_read_string_ssid (void)
+{
+	NMConnection *connection;
+	NMSettingWireless *s_wireless;
+	GError *error = NULL;
+	const GByteArray *array;
+	const char *expected_ssid = "blah blah ssid 1234";
+
+	connection = connection_from_file (TEST_STRING_SSID_FILE, NULL);
+	ASSERT (connection != NULL,
+			"connection-read", "failed to read %s", TEST_STRING_SSID_FILE);
+
+	ASSERT (nm_connection_verify (connection, &error),
+	        "connection-verify", "failed to verify %s: %s", TEST_STRING_SSID_FILE, error->message);
+
+	/* ===== WIRELESS SETTING ===== */
+
+	s_wireless = NM_SETTING_WIRELESS (nm_connection_get_setting (connection, NM_TYPE_SETTING_WIRELESS));
+	ASSERT (s_wireless != NULL,
+	        "connection-verify-wireless", "failed to verify %s: missing %s setting",
+	        TEST_STRING_SSID_FILE,
+	        NM_SETTING_WIRELESS_SETTING_NAME);
+
+	/* SSID */
+	array = nm_setting_wireless_get_ssid (s_wireless);
+	ASSERT (array != NULL,
+	        "connection-verify-wireless", "failed to verify %s: missing %s / %s key",
+	        TEST_STRING_SSID_FILE,
+	        NM_SETTING_WIRELESS_SETTING_NAME,
+	        NM_SETTING_WIRELESS_SSID);
+	ASSERT (memcmp (array->data, expected_ssid, sizeof (expected_ssid)) == 0,
+	        "connection-verify-wireless", "failed to verify %s: unexpected %s / %s key value",
+	        TEST_STRING_SSID_FILE,
+	        NM_SETTING_WIRELESS_SETTING_NAME,
+	        NM_SETTING_WIRELESS_SSID);
+
+	g_object_unref (connection);
+}
+
+static void
+test_write_string_ssid (void)
+{
+	NMConnection *connection;
+	NMSettingConnection *s_con;
+	NMSettingWireless *s_wireless;
+	NMSettingIP4Config *s_ip4;
+	char *uuid, *testfile = NULL, *tmp;
+	GByteArray *ssid;
+	unsigned char tmpssid[] = { 65, 49, 50, 51, 32, 46, 92, 46, 36, 37, 126, 93 };
+	gboolean success;
+	NMConnection *reread;
+	GError *error = NULL;
+	pid_t owner_grp;
+	uid_t owner_uid;
+	GKeyFile *keyfile;
+
+	connection = nm_connection_new ();
+	ASSERT (connection != NULL,
+	        "connection-write", "failed to allocate new connection");
+
+	/* Connection setting */
+
+	s_con = NM_SETTING_CONNECTION (nm_setting_connection_new ());
+	ASSERT (s_con != NULL,
+	        "connection-write", "failed to allocate new %s setting",
+	        NM_SETTING_CONNECTION_SETTING_NAME);
+	nm_connection_add_setting (connection, NM_SETTING (s_con));
+
+	uuid = nm_utils_uuid_generate ();
+	g_object_set (s_con,
+	              NM_SETTING_CONNECTION_ID, "String SSID Test",
+	              NM_SETTING_CONNECTION_UUID, uuid,
+	              NM_SETTING_CONNECTION_TYPE, NM_SETTING_WIRELESS_SETTING_NAME,
+	              NULL);
+	g_free (uuid);
+
+	/* Wireless setting */
+
+	s_wireless = NM_SETTING_WIRELESS (nm_setting_wireless_new ());
+	ASSERT (s_wireless != NULL,
+			"connection-write", "failed to allocate new %s setting",
+			NM_SETTING_WIRELESS_SETTING_NAME);
+	nm_connection_add_setting (connection, NM_SETTING (s_wireless));
+
+	ssid = g_byte_array_sized_new (sizeof (tmpssid));
+	g_byte_array_append (ssid, &tmpssid[0], sizeof (tmpssid));
+	g_object_set (s_wireless, NM_SETTING_WIRELESS_SSID, ssid, NULL);
+	g_byte_array_free (ssid, TRUE);
+
+	/* IP4 setting */
+
+	s_ip4 = NM_SETTING_IP4_CONFIG (nm_setting_ip4_config_new ());
+	ASSERT (s_ip4 != NULL,
+			"connection-write", "failed to allocate new %s setting",
+			NM_SETTING_IP4_CONFIG_SETTING_NAME);
+	nm_connection_add_setting (connection, NM_SETTING (s_ip4));
+
+	g_object_set (s_ip4,
+	              NM_SETTING_IP4_CONFIG_METHOD, NM_SETTING_IP4_CONFIG_METHOD_AUTO,
+	              NULL);
+
+	/* Write out the connection */
+	owner_uid = geteuid ();
+	owner_grp = getegid ();
+	success = write_connection (connection, TEST_SCRATCH_DIR, owner_uid, owner_grp, &testfile, &error);
+	ASSERT (success == TRUE,
+			"connection-write", "failed to allocate write keyfile: %s",
+			error ? error->message : "(none)");
+
+	ASSERT (testfile != NULL,
+			"connection-write", "didn't get keyfile name back after writing connection");
+
+	/* Ensure the SSID was written out as a string */
+	keyfile = g_key_file_new ();
+	ASSERT (g_key_file_load_from_file (keyfile, testfile, 0, NULL) == TRUE,
+	        "string-ssid-verify", "failed to load keyfile to verify");
+	tmp = g_key_file_get_string (keyfile, NM_SETTING_WIRELESS_SETTING_NAME, NM_SETTING_WIRELESS_SSID, NULL);
+	ASSERT (tmp, "string-ssid-verify", "failed to load 'ssid' key from file");
+	ASSERT (strlen (tmp) == sizeof (tmpssid),
+	        "string-ssid-verify", "reread SSID and expected were different sizes");
+	ASSERT (memcmp (tmp, tmpssid, sizeof (tmpssid)) == 0,
+	        "string-ssid-verify", "reread SSID and expected were different");
+	g_free (tmp);
+	g_key_file_free (keyfile);
+
+	/* Read the connection back in and compare it to the one we just wrote out */
+	reread = connection_from_file (testfile, NULL);
 	ASSERT (reread != NULL, "connection-write", "failed to re-read test connection");
 
 	ASSERT (nm_connection_compare (connection, reread, NM_SETTING_COMPARE_FLAG_EXACT) == TRUE,
@@ -1317,7 +1460,7 @@ test_read_bt_dun_connection (void)
 	const char *expected_username = "ISP@CINGULARGPRS.COM";
 	const char *expected_password = "CINGULAR1";
 
-	connection = connection_from_file (TEST_BT_DUN_FILE);
+	connection = connection_from_file (TEST_BT_DUN_FILE, NULL);
 	ASSERT (connection != NULL,
 			"connection-read", "failed to read %s", TEST_BT_DUN_FILE);
 
@@ -1567,7 +1710,7 @@ test_write_bt_dun_connection (void)
 			"connection-write", "didn't get keyfile name back after writing connection");
 
 	/* Read the connection back in and compare it to the one we just wrote out */
-	reread = connection_from_file (testfile);
+	reread = connection_from_file (testfile, NULL);
 	ASSERT (reread != NULL, "connection-write", "failed to re-read test connection");
 
 	ASSERT (nm_connection_compare (connection, reread, NM_SETTING_COMPARE_FLAG_EXACT) == TRUE,
@@ -1601,7 +1744,7 @@ test_read_gsm_connection (void)
 	const char *expected_network_id = "24005";
 	const char *expected_pin = "2345";
 
-	connection = connection_from_file (TEST_GSM_FILE);
+	connection = connection_from_file (TEST_GSM_FILE, NULL);
 	ASSERT (connection != NULL,
 			"connection-read", "failed to read %s", TEST_GSM_FILE);
 
@@ -1829,7 +1972,7 @@ test_write_gsm_connection (void)
 			"connection-write", "didn't get keyfile name back after writing connection");
 
 	/* Read the connection back in and compare it to the one we just wrote out */
-	reread = connection_from_file (testfile);
+	reread = connection_from_file (testfile, NULL);
 	ASSERT (reread != NULL, "connection-write", "failed to re-read test connection");
 
 	ASSERT (nm_connection_compare (connection, reread, NM_SETTING_COMPARE_FLAG_EXACT) == TRUE,
@@ -1866,6 +2009,9 @@ int main (int argc, char **argv)
 
 	test_read_valid_wireless_connection ();
 	test_write_wireless_connection ();
+
+	test_read_string_ssid ();
+	test_write_string_ssid ();
 
 	test_read_bt_dun_connection ();
 	test_write_bt_dun_connection ();

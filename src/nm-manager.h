@@ -35,6 +35,7 @@
 #define NM_IS_MANAGER_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE ((obj), NM_TYPE_MANAGER))
 #define NM_MANAGER_GET_CLASS(obj)  (G_TYPE_INSTANCE_GET_CLASS ((obj), NM_TYPE_MANAGER, NMManagerClass))
 
+#define NM_MANAGER_VERSION "version"
 #define NM_MANAGER_STATE "state"
 #define NM_MANAGER_NETWORKING_ENABLED "networking-enabled"
 #define NM_MANAGER_WIRELESS_ENABLED "wireless-enabled"
@@ -110,6 +111,8 @@ NMState nm_manager_get_state (NMManager *manager);
 /* Connections */
 
 GSList *nm_manager_get_connections    (NMManager *manager, NMConnectionScope scope);
+
+gboolean nm_manager_auto_user_connections_allowed (NMManager *manager);
 
 NMConnection * nm_manager_get_connection_by_object_path (NMManager *manager,
                                                          NMConnectionScope scope,

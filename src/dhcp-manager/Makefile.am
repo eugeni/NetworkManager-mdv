@@ -4,8 +4,7 @@ INCLUDES = \
 	-I${top_builddir}/marshallers \
 	-I${top_srcdir}/src/logging \
 	-I${top_srcdir}/libnm-util \
-	-I${top_srcdir}/src \
-	-I${top_srcdir}/src/named-manager
+	-I${top_srcdir}/src
 
 noinst_LTLIBRARIES = libdhcp-manager.la
 
@@ -29,6 +28,7 @@ libdhcp_manager_la_CPPFLAGS = \
 	-DLIBEXECDIR=\"$(libexecdir)\" \
 	-DLOCALSTATEDIR=\"$(localstatedir)\" \
 	-DDHCLIENT_PATH=\"$(DHCLIENT_PATH)\" \
+	-DDHCLIENT_V$(DHCLIENT_VERSION) \
 	-DDHCPCD_PATH=\"$(DHCPCD_PATH)\"
 
 libdhcp_manager_la_LIBADD = \
