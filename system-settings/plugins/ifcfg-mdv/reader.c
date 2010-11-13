@@ -19,6 +19,7 @@
  * Mandriva-specific changes by Eugeni Dodonov <eugeni@mandriva.com>.
  */
 
+#include <config.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
