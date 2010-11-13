@@ -138,7 +138,7 @@ out:
  *   return ifcfg name. For plain ifcfg-XXX this is XXX;
  *   for a file under .../wireless.d this is simply file name
  */
-const gchar *
+gchar *
 mdv_get_ifcfg_name(const gchar *path)
 {
 	switch (mdv_get_ifcfg_type(path)) {

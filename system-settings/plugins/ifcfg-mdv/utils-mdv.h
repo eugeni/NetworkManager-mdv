@@ -35,7 +35,7 @@ typedef enum {
 
 gboolean mdv_should_ignore_file (const gchar *);
 MdvIfcfgType mdv_get_ifcfg_type (const gchar *);
-const gchar *mdv_get_ifcfg_name (const gchar *);
+gchar *mdv_get_ifcfg_name (const gchar *);
 
 #if 0
 char *utils_bin2hexstr (const char *bytes, int len, int final_len);
