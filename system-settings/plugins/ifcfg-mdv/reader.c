@@ -3538,7 +3538,7 @@ connection_from_file (const char *filename,
                       char **keyfile,
                       char **routefile,
                       char **route6file,
-                      GError **error,
+                      GError **out_error,
                       gboolean *ignore_error)
 {
 	NMConnection *connection = NULL;
@@ -3552,6 +3552,7 @@ connection_from_file (const char *filename,
 	const char *ifcfg_name = NULL;
 	gboolean nm_controlled = TRUE;
 	gboolean ip6_used = FALSE;
+	GError *error = NULL;
 
 	g_return_val_if_fail (filename != NULL, NULL);
 	g_return_val_if_fail (unmanaged != NULL, NULL);
@@ -3572,16 +3573,16 @@ connection_from_file (const char *filename,
 
 	ifcfg_type = mdv_get_ifcfg_type(filename);
 	if (ifcfg_type == MdvIfcfgTypeUnknown) {
-		g_set_error(error, ifcfg_plugin_error_quark(), 0,
+		g_set_error(out_error, ifcfg_plugin_error_quark(), 0,
 			"Cannot determine connection type for %s; ignored", filename);
 		return NULL;
 	}
 
 	parsed = svNewFile (filename);
 	if (!parsed) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (out_error, ifcfg_plugin_error_quark (), 0,
 		             "Couldn't parse file '%s'", filename);
-		goto done;
+		return NULL;
 	}
 
 	if (ifcfg_type == MdvIfcfgTypeInterface) {
@@ -3590,15 +3591,16 @@ connection_from_file (const char *filename,
 		 */
 		device = svGetValue (parsed, "DEVICE", FALSE);
 		if (!device) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (&error, ifcfg_plugin_error_quark (), 0,
 				 "File '%s' does not have DEVICE key", filename);
 			goto done;
 		}
 
 		if (!strcmp (device, "lo")) {
-			*ignore_error = TRUE;
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
-				 "Ignoring loopback device config");
+			if (ignore_error)
+				*ignore_error = TRUE;
+			g_set_error (&error, ifcfg_plugin_error_quark (), 0,
+			             "Ignoring loopback device config.");
 			goto done;
 		}
 
@@ -3662,14 +3664,14 @@ connection_from_file (const char *filename,
 		}
 
 		if (!strcasecmp (type, TYPE_ETHERNET))
-			connection = wired_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error);
+			connection = wired_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, &error);
 		else if (!strcasecmp (type, TYPE_WIRELESS))
-			connection = wireless_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error, ignore_error);
+			connection = wireless_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, &error, ignore_error);
 		else if (!strcasecmp (type, TYPE_BRIDGE)) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (&error, ifcfg_plugin_error_quark (), 0,
 				     "Bridge connections are not yet supported");
 		else {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (&error, ifcfg_plugin_error_quark (), 0,
 				     "Unknown connection type '%s'", type);
 			goto done;
 		}
@@ -3681,9 +3683,9 @@ connection_from_file (const char *filename,
 
 	} else if (ifcfg_type == MdvIfcfgTypeSSID) {
 		/* TODO directly jump to wireless WPA */
-		connection = roaming_connection_from_ifcfg(filename, parsed, error);
+		connection = roaming_connection_from_ifcfg(filename, parsed, &error);
 	} else {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (&error, ifcfg_plugin_error_quark (), 0,
 			"Ignoring BSSID file '%s'", filename);
 			goto done;
 	}
@@ -3693,9 +3695,8 @@ connection_from_file (const char *filename,
 		goto done;
 
 #if 0
-	/* No IPv6 on Mandriva */
-	s_ip6 = make_ip6_setting (parsed, network_file, iscsiadm_path, error);
-	if (*error) {
+	s_ip6 = make_ip6_setting (parsed, network_file, iscsiadm_path, &error);
+	if (error) {
 		g_object_unref (connection);
 		connection = NULL;
 		goto done;
@@ -3709,8 +3710,8 @@ connection_from_file (const char *filename,
 	}
 #endif
 
-	s_ip4 = make_ip4_setting (parsed, network_file, iscsiadm_path, ip6_used, error);
-	if (*error) {
+	s_ip4 = make_ip4_setting (parsed, network_file, iscsiadm_path, ip6_used, &error);
+	if (error) {
 		g_object_unref (connection);
 		connection = NULL;
 		goto done;
@@ -3735,7 +3736,7 @@ connection_from_file (const char *filename,
 	}
 #endif
 
-	if (!nm_connection_verify (connection, error)) {
+	if (!nm_connection_verify (connection, &error)) {
 		g_object_unref (connection);
 		connection = NULL;
 	}
@@ -3747,8 +3748,11 @@ connection_from_file (const char *filename,
 done:
 	g_free (type);
 	g_free(device);
-	if (parsed)
-		svCloseFile (parsed);
+	svCloseFile (parsed);
+	if (error && out_error)
+		*out_error = error;
+	else
+		g_clear_error (&error);
 	return connection;
 }
 
