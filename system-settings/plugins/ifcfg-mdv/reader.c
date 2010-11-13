@@ -15,7 +15,7 @@
  * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
- * Copyright (C) 2008 - 2009 Red Hat, Inc.
+ * Copyright (C) 2008 - 2010 Red Hat, Inc.
  * Mandriva-specific changes by Eugeni Dodonov <eugeni@mandriva.com>.
  */
 
@@ -1222,6 +1222,7 @@ static NMSetting *
 make_ip4_setting (shvarFile *ifcfg,
                   const char *network_file,
                   const char *iscsiadm_path,
+                  gboolean valid_ip6_config,
                   GError **error)
 {
 	NMSettingIP4Config *s_ip4 = NULL;
@@ -1306,14 +1307,17 @@ make_ip4_setting (shvarFile *ifcfg,
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
 			             "Unknown BOOTPROTO '%s'", value);
 			g_free (value);
-			goto error;
+			goto done;
 		}
 		g_free (value);
 	} else {
 		char *tmp_ip4, *tmp_prefix, *tmp_netmask;
 
-		/* If there is no BOOTPROTO, no IPADDR, no PREFIX, and no NETMASK,
-		 * assume DHCP is to be used.  Happens with minimal ifcfg files like:
+		/* If there is no BOOTPROTO, no IPADDR, no PREFIX, no NETMASK, but
+		 * valid IPv6 configuration, assume that IPv4 is disabled.  Otherwise,
+		 * if there is no IPv6 configuration, assume DHCP is to be used.
+		 * Happens with minimal ifcfg files like the following that anaconda
+		 * sometimes used to write out:
 		 *
 		 * DEVICE=eth0
 		 * HWADDR=11:22:33:44:55:66
@@ -1326,8 +1330,14 @@ make_ip4_setting (shvarFile *ifcfg,
 		tmp_ip4 = svGetValue (ifcfg, "IPADDR", FALSE);
 		tmp_prefix = svGetValue (ifcfg, "PREFIX", FALSE);
 		tmp_netmask = svGetValue (ifcfg, "NETMASK", FALSE);
-		if (!tmp_ip4 && !tmp_prefix && !tmp_netmask)
+		if (!tmp_ip4 && !tmp_prefix && !tmp_netmask) {
+			if (valid_ip6_config) {
+				/* Nope, no IPv4 */
+				goto done;
+			}
+
 			method = NM_SETTING_IP4_CONFIG_METHOD_AUTO;
+		}
 		g_free (tmp_ip4);
 		g_free (tmp_prefix);
 		g_free (tmp_netmask);
@@ -1348,7 +1358,7 @@ make_ip4_setting (shvarFile *ifcfg,
 		for (i = 1; i < 256; i++) {
 			addr = read_full_ip4_address (ifcfg, network_file, i, error);
 			if (error && *error)
-				goto error;
+				goto done;
 			if (!addr)
 				break;
 
@@ -1395,7 +1405,7 @@ make_ip4_setting (shvarFile *ifcfg,
 			}
 			if (!tmp_success) {
 				g_free (tag);
-				goto error;
+				goto done;
 			}
 			g_clear_error (error);
 		}
@@ -1432,7 +1442,7 @@ make_ip4_setting (shvarFile *ifcfg,
 	if (!route_path) {
 		g_set_error (error, ifcfg_plugin_error_quark (), 0,
 		             "Could not get route file path for '%s'", ifcfg->fileName);
-		goto error;
+		goto done;
 	}
 
 	/* First test new/legacy syntax */
@@ -1446,7 +1456,7 @@ make_ip4_setting (shvarFile *ifcfg,
 				route = read_one_ip4_route (route_ifcfg, network_file, i, error);
 				if (error && *error) {
 					svCloseFile (route_ifcfg);
-					goto error;
+					goto done;
 				}
 				if (!route)
 					break;
@@ -1461,7 +1471,7 @@ make_ip4_setting (shvarFile *ifcfg,
 		read_route_file_legacy (route_path, s_ip4, error);
 		g_free (route_path);
 		if (error && *error)
-			goto error;
+			goto done;
 	}
 #endif
 
@@ -1491,7 +1501,7 @@ make_ip4_setting (shvarFile *ifcfg,
 
 	return NM_SETTING (s_ip4);
 
-error:
+done:
 	g_object_unref (s_ip4);
 	return NULL;
 }
@@ -3489,6 +3499,10 @@ connection_from_file (const char *filename,
 	gboolean nm_controlled = FALSE, onboot;
 	char *device = NULL;
 	MdvIfcfgType ifcfg_type;
+	NMSetting *s_ip4, *s_ip6;
+	const char *ifcfg_name = NULL;
+	gboolean nm_controlled = TRUE;
+	gboolean ip6_used = FALSE;
 
 	g_return_val_if_fail (filename != NULL, NULL);
 	g_return_val_if_fail (unmanaged != NULL, NULL);
@@ -3611,15 +3625,6 @@ connection_from_file (const char *filename,
 	if (!connection || *unmanaged)
 		goto done;
 
-	s_ip4 = make_ip4_setting (parsed, network_file, iscsiadm_path, error);
-	if (*error) {
-		g_object_unref (connection);
-		connection = NULL;
-		goto done;
-	} else if (s_ip4) {
-		nm_connection_add_setting (connection, s_ip4);
-	}
-
 #if 0
 	/* No IPv6 on Mandriva */
 	s_ip6 = make_ip6_setting (parsed, network_file, iscsiadm_path, error);
@@ -3627,9 +3632,23 @@ connection_from_file (const char *filename,
 		g_object_unref (connection);
 		connection = NULL;
 		goto done;
-	} else if (s_ip6)
+	} else if (s_ip6) {
+		const char *method;
+
 		nm_connection_add_setting (connection, s_ip6);
+		method = nm_setting_ip6_config_get_method (NM_SETTING_IP6_CONFIG (s_ip6));
+		if (method && strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_IGNORE))
+			ip6_used = TRUE;
+	}
 #endif
+
+	s_ip4 = make_ip4_setting (parsed, network_file, iscsiadm_path, ip6_used, error);
+	if (*error) {
+		g_object_unref (connection);
+		connection = NULL;
+		goto done;
+	} else if (s_ip4)
+		nm_connection_add_setting (connection, s_ip4);
 
 #if 0
 	/* no iSCSI on Mandriva */
