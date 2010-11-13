@@ -1127,8 +1127,6 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		method = NM_SETTING_IP4_CONFIG_METHOD_AUTO;
 
 	if (!strcmp (method, NM_SETTING_IP4_CONFIG_METHOD_DISABLED)) {
-		int result;
-
 		/* IPv4 disabled, clear IPv4 related parameters */
 		svSetValue (ifcfg, "BOOTPROTO", NULL, FALSE);
 		for (i = 0; i < 254; i++) {

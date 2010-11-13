@@ -120,7 +120,7 @@ make_connection_setting (const char *file,
                          const char *suggested)
 {
 	NMSettingConnection *s_con;
-	const char *ifcfg_name = NULL;
+	char *ifcfg_name = NULL;
 	char *new_id = NULL, *uuid = NULL, *value;
 	// char *ifcfg_id;
 
@@ -3555,9 +3555,6 @@ connection_from_file (const char *filename,
 	gboolean nm_controlled = FALSE, onboot;
 	char *device = NULL;
 	MdvIfcfgType ifcfg_type;
-	NMSetting *s_ip4, *s_ip6;
-	const char *ifcfg_name = NULL;
-	gboolean nm_controlled = TRUE;
 	gboolean ip6_used = FALSE;
 	GError *error = NULL;
 	guint32 ignore_reason = IGNORE_REASON_NONE;
@@ -3613,7 +3610,7 @@ connection_from_file (const char *filename,
 		}
 
 		type = svGetValue (parsed, "TYPE", FALSE);
-		if (!type) {
+			if (!type) {
 
 			/* If no type, if the device has wireless extensions, it's wifi,
 			 * otherwise it's ethernet.
@@ -3680,7 +3677,8 @@ connection_from_file (const char *filename,
 		else if (!strcasecmp (type, TYPE_BRIDGE)) {
 			g_set_error (&error, IFCFG_PLUGIN_ERROR, 0,
 				     "Bridge connections are not yet supported");
-		else {
+			goto done;
+		} else {
 			g_set_error (&error, IFCFG_PLUGIN_ERROR, 0,
 				     "Unknown connection type '%s'", type);
 			goto done;
@@ -3717,6 +3715,7 @@ connection_from_file (const char *filename,
 				             ignore_reason == IGNORE_REASON_BRIDGE ? "Bridge" : "VLAN");
 			}
 		}
+	}
 
 #if 0
 	s_ip6 = make_ip6_setting (parsed, network_file, iscsiadm_path, &error);

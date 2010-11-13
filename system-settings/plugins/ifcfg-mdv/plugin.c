@@ -323,7 +323,7 @@ dir_changed (GFileMonitor *monitor,
 	}
 
 	/* Given any ifcfg, keys, or routes file, get the ifcfg file path */
-	name = mdv_get_icfg_name (path);
+	name = mdv_get_ifcfg_name (path);
 	g_free (path);
 
 	connection = g_hash_table_lookup (priv->connections, name);
