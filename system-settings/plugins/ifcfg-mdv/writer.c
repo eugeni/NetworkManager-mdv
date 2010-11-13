@@ -129,7 +129,7 @@ write_secret_file (const char *path,
 
 	tmppath = g_malloc0 (strlen (path) + 10);
 	if (!tmppath) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not allocate memory for temporary file for '%s'",
 		             path);
 		return FALSE;
@@ -141,7 +141,7 @@ write_secret_file (const char *path,
 	errno = 0;
 	fd = mkstemp (tmppath);
 	if (fd < 0) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not create temporary file for '%s': %d",
 		             path, errno);
 		goto out;
@@ -152,7 +152,7 @@ write_secret_file (const char *path,
 	if (fchmod (fd, S_IRUSR | S_IWUSR)) {
 		close (fd);
 		unlink (tmppath);
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not set permissions for temporary file '%s': %d",
 		             path, errno);
 		goto out;
@@ -163,7 +163,7 @@ write_secret_file (const char *path,
 	if (written != len) {
 		close (fd);
 		unlink (tmppath);
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not write temporary file for '%s': %d",
 		             path, errno);
 		goto out;
@@ -174,7 +174,7 @@ write_secret_file (const char *path,
 	errno = 0;
 	if (rename (tmppath, path)) {
 		unlink (tmppath);
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not rename temporary file to '%s': %d",
 		             path, errno);
 		goto out;
@@ -292,7 +292,7 @@ write_object (NMSetting8021x *s_8021x,
 	g_return_val_if_fail (objtype != NULL, FALSE);
 
 	if (override_data) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			     "ifcfg-mdv does not support raw certificate data");
 		return FALSE;
 		/* if given explicit data to save, always use that instead of asking
@@ -303,7 +303,7 @@ write_object (NMSetting8021x *s_8021x,
 		scheme = (*(objtype->scheme_func))(s_8021x);
 		switch (scheme) {
 		case NM_SETTING_802_1X_CK_SCHEME_BLOB:
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 				     "ifcfg-mdv does not support raw certificate data");
 			return FALSE;
 		// 	blob = (*(objtype->blob_func))(s_8021x);
@@ -357,7 +357,7 @@ write_object (NMSetting8021x *s_8021x,
 
 		new_file = utils_cert_path (ifcfg->fileName, objtype->suffix);
 		if (!new_file) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Could not create file path for %s / %s",
 			             NM_SETTING_802_1X_SETTING_NAME, objtype->setting_key);
 			return FALSE;
@@ -372,7 +372,7 @@ write_object (NMSetting8021x *s_8021x,
 			svSetValue (ifcfg, objtype->ifcfg_key, new_file, FALSE);
 			return TRUE;
 		} else {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Could not write certificate/key for %s / %s: %s",
 			             NM_SETTING_802_1X_SETTING_NAME, objtype->setting_key,
 			             (write_error && write_error->message) ? write_error->message : "(unknown)");
@@ -429,7 +429,7 @@ write_8021x_certs (NMSetting8021x *s_8021x,
 		otype = phase2 ? &phase2_pk_type : &pk_type;
 
 	if ((*(otype->scheme_func))(s_8021x) == NM_SETTING_802_1X_CK_SCHEME_BLOB) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			     "ifcfg-mdv does not support raw certificate data");
 		return FALSE;
 	//	blob = (*(otype->blob_func))(s_8021x);
@@ -611,7 +611,7 @@ write_wireless_security_setting (NMConnection *connection,
 
 	s_wsec = (NMSettingWirelessSecurity *) nm_connection_get_setting (connection, NM_TYPE_SETTING_WIRELESS_SECURITY);
 	if (!s_wsec) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing '%s' setting", NM_SETTING_WIRELESS_SECURITY_SETTING_NAME);
 		return FALSE;
 	}
@@ -653,7 +653,7 @@ write_wireless_security_setting (NMConnection *connection,
 				svSetValue (ifcfg, "WIRELESS_ENC_MODE", "open", FALSE);
 			ifcfg_mdv_wpa_network_set_val(wpan, "auth_alg", "OPEN");
 		} else if (!strcmp (auth_alg, "leap")) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 				     "ifcfg-mdv does not support LEAP authentication");
 			return FALSE;
 #if 0
@@ -675,7 +675,7 @@ write_wireless_security_setting (NMConnection *connection,
 	if (wep) {
 		/* Mandriva always sets key_idx == 0 and does not support passphrase */
 		if (nm_setting_wireless_security_get_wep_key_type (s_wsec) == NM_WEP_KEY_TYPE_PASSPHRASE) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 				"ifcfg-mdv does not support WEP passphrase");
 			return FALSE;
 		}
@@ -818,7 +818,7 @@ write_wireless_setting (NMConnection *connection,
 
 	s_wireless = (NMSettingWireless *) nm_connection_get_setting (connection, NM_TYPE_SETTING_WIRELESS);
 	if (!s_wireless) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing '%s' setting", NM_SETTING_WIRELESS_SETTING_NAME);
 		return FALSE;
 	}
@@ -853,12 +853,12 @@ write_wireless_setting (NMConnection *connection,
 
 	ssid = nm_setting_wireless_get_ssid (s_wireless);
 	if (!ssid) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing SSID in '%s' setting", NM_SETTING_WIRELESS_SETTING_NAME);
 		return FALSE;
 	}
 	if (!ssid->len || ssid->len > 32) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Invalid SSID in '%s' setting", NM_SETTING_WIRELESS_SETTING_NAME);
 		return FALSE;
 	}
@@ -868,7 +868,7 @@ write_wireless_setting (NMConnection *connection,
 	 * that cannot included */
 	for (i = 0; i < ssid->len; i++)
 		if (G_DIR_SEPARATOR == ssid->data[i] || ssid->data[i] == '\0') {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 				     "Invalid SSID in '%s' setting", NM_SETTING_WIRELESS_SETTING_NAME);
 			return FALSE;
 		}
@@ -878,7 +878,7 @@ write_wireless_setting (NMConnection *connection,
 	 */
 	tmp = svGetValue(ifcfg, "WIRELESS_ESSID", TRUE);
 	if (!tmp) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		     "Missing WIRELESS_ESSID in '%s'", ifcfg->fileName);
 		return FALSE;
 	}
@@ -921,7 +921,7 @@ write_wireless_setting (NMConnection *connection,
 		svSetValue (ifcfg, "WIRELESS_MODE", "Ad-Hoc", FALSE);
 		adhoc = TRUE;
 	} else {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Invalid mode '%s' in '%s' setting",
 		             mode, NM_SETTING_WIRELESS_SETTING_NAME);
 		return FALSE;
@@ -973,7 +973,7 @@ write_wired_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 
 	s_wired = (NMSettingWired *) nm_connection_get_setting (connection, NM_TYPE_SETTING_WIRED);
 	if (!s_wired) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing '%s' setting", NM_SETTING_WIRED_SETTING_NAME);
 		return FALSE;
 	}
@@ -1078,7 +1078,7 @@ write_route_file_legacy (const char *filename, NMSettingIP4Config *s_ip4, GError
 	g_strfreev (route_items);
 
 	if (!g_file_set_contents (filename, route_contents, -1, NULL)) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Writing route file '%s' failed", filename);
 		goto error;
 	}
@@ -1168,14 +1168,14 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		svSetValue (ifcfg, "BOOTPROTO", "shared", FALSE);
 #endif
 	else {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "ifcfg-mdv: unsupported activation method '%s'", value);
 		return FALSE;
 	}
 
 	num = nm_setting_ip4_config_get_num_addresses (s_ip4);
 	if (num > 1) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		     "ifcfg-mdv: multiple IPADDRs per interface are not supported");
 			return FALSE;
 	}
@@ -1236,7 +1236,7 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 
 	num = nm_setting_ip4_config_get_num_dns (s_ip4);
 	if (num > 2) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		     "ifcfg-mdv: max two DNS servers per interface are supported");
 			return FALSE;
 	}
@@ -1311,7 +1311,7 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		/* Mandriva does not support client ID */
 		value = nm_setting_ip4_config_get_dhcp_client_id (s_ip4);
 		if (value) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			     "ifcfg-mdv: DHCP_CLIENT_ID is not supported");
 				return FALSE;
 			// svSetValue (ifcfg, "DHCP_CLIENT_ID", value, FALSE);
@@ -1327,7 +1327,7 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	/* Static routes - route-<name> file */
 	route_path = utils_get_route_path (ifcfg->fileName);
 	if (!route_path) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not get route file path for '%s'", ifcfg->fileName);
 		goto out;
 	}
@@ -1335,7 +1335,7 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 
 	num = nm_setting_ip4_config_get_num_routes (s_ip4);
 	if (num > 0) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		     "ifcfg-mdv: static routes are not supported");
 			return FALSE;
 	}
@@ -1346,7 +1346,7 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		g_free (route_path);
 		routefile = utils_get_route_ifcfg (ifcfg->fileName, TRUE);
 		if (!routefile) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Could not create route file '%s'", routefile->fileName);
 			goto out;
 		}
@@ -1402,7 +1402,7 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 			g_free (metric_key);
 		}
 		if (svWriteFile (routefile, 0644)) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Could not update route file '%s'", routefile->fileName);
 			svCloseFile (routefile);
 			goto out;
@@ -1471,7 +1471,7 @@ write_route6_file (const char *filename, NMSettingIP6Config *s_ip6, GError **err
 	g_strfreev (route_items);
 
 	if (!g_file_set_contents (filename, route_contents, -1, NULL)) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Writing route6 file '%s' failed", filename);
 		goto error;
 	}
@@ -1503,7 +1503,7 @@ write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 
 	s_ip6 = (NMSettingIP6Config *) nm_connection_get_setting (connection, NM_TYPE_SETTING_IP6_CONFIG);
 	if (!s_ip6) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing '%s' setting", NM_SETTING_IP6_CONFIG_SETTING_NAME);
 		return FALSE;
 	}
@@ -1539,7 +1539,7 @@ write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 		/* TODO */
 #endif
 	}
-	g_set_error (error, ifcfg_plugin_error_quark (), 0,
+	g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		     "IPv6 settings not supported");
 	return FALSE;
 
@@ -1639,7 +1639,7 @@ write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	/* Static routes go to route6-<dev> file */
 	route6_path = utils_get_route6_path (ifcfg->fileName);
 	if (!route6_path) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Could not get route6 file path for '%s'", ifcfg->fileName);
 		goto error;
 	}
@@ -1695,7 +1695,7 @@ write_connection (NMConnection *connection,
 
 	s_con = NM_SETTING_CONNECTION (nm_connection_get_setting (connection, NM_TYPE_SETTING_CONNECTION));
 	if (!s_con) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing '%s' setting", NM_SETTING_CONNECTION_SETTING_NAME);
 		return FALSE;
 	}
@@ -1714,14 +1714,14 @@ write_connection (NMConnection *connection,
 	}
 
 	if (!ifcfg) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Failed to open/create ifcfg file '%s'", ifcfg_name);
 		goto out;
 	}
 
 	type = nm_setting_connection_get_connection_type (s_con);
 	if (!type) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Missing connection type!");
 		goto out;
 	}
@@ -1732,7 +1732,7 @@ write_connection (NMConnection *connection,
 	if (!strcmp (type, NM_SETTING_WIRED_SETTING_NAME)) {
 		// FIXME: can't write PPPoE at this time
 		if (nm_connection_get_setting (connection, NM_TYPE_SETTING_PPPOE)) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 			             "Can't write connection type '%s'",
 			             NM_SETTING_PPPOE_SETTING_NAME);
 			goto out;
@@ -1744,7 +1744,7 @@ write_connection (NMConnection *connection,
 	} else if (!strcmp (type, NM_SETTING_WIRELESS_SETTING_NAME)) {
 		wpan = ifcfg_mdv_wpa_network_new(NULL);
 		if (!wpan) {
-			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 				     "Unable to allocate WPA network");
 			goto out;
 		}
@@ -1752,7 +1752,7 @@ write_connection (NMConnection *connection,
 		if (!write_wireless_setting (connection, ifcfg, wpan, &no_8021x, error))
 			goto out;
 	} else {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Can't write connection type '%s'", type);
 		goto out;
 	}
@@ -1774,7 +1774,7 @@ write_connection (NMConnection *connection,
 	write_connection_setting (s_con, ifcfg);
 
 	if (svWriteFile (ifcfg, 0600)) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Can't write connection '%s'", ifcfg->fileName);
 		goto out;
 	}
@@ -1806,7 +1806,7 @@ writer_new_connection (NMConnection *connection,
 {
 	// return write_connection (connection, ifcfg_dir, NULL, NULL, out_filename, error);
 	/* For now, disable creation of system connection on Mandriva */
-	g_set_error (error, ifcfg_plugin_error_quark (), 0,
+	g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 	     "Creation of system connection not yet implemented in ifcfg-mdv");
 	return FALSE;
 }
@@ -1820,7 +1820,7 @@ writer_update_connection (NMConnection *connection,
 {
 	/* Temporary disable updating of roaming connection */
 	if (mdv_get_ifcfg_type(filename) != MdvIfcfgTypeInterface) {
-		g_set_error (error, ifcfg_plugin_error_quark (), 0,
+		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
 		             "Not yet implemented");
 		return FALSE;
 	}
