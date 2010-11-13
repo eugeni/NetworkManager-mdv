@@ -662,6 +662,7 @@ write_wireless_security_setting (NMConnection *connection,
 			svSetValue (ifcfg, "IEEE_8021X_IDENTITY",
 			            nm_setting_wireless_security_get_leap_username (s_wsec),
 			            FALSE);
+				     "ifcfg-mdv does not support LEAP authentication");
 			set_secret (ifcfg, "IEEE_8021X_PASSWORD",
 			            nm_setting_wireless_security_get_leap_password (s_wsec),
 			            FALSE);
@@ -670,19 +671,42 @@ write_wireless_security_setting (NMConnection *connection,
 		}
 	}
 
-#if 0
+	set_wep_secret (ifcfg, "WIRELESS_ENC_KEY", NULL, FALSE);
 	if (wep) {
+		/* Mandriva always sets key_idx == 0 and does not support passphrase */
+		if (nm_setting_wireless_security_get_wep_key_type (s_wsec) == NM_WEP_KEY_TYPE_PASSPHRASE) {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				"ifcfg-mdv does not support WEP passphrase");
+			return FALSE;
+		}
+		key = nm_setting_wireless_security_get_wep_key (s_wsec, 0);
+		set_wep_secret (ifcfg, "WIRELESS_ENC_KEY", key, FALSE);
+#if 0
 		/* Default WEP TX key index */
 		tmp = g_strdup_printf ("%d", nm_setting_wireless_security_get_wep_tx_keyidx (s_wsec) + 1);
 		svSetValue (ifcfg, "DEFAULTKEY", tmp, FALSE);
 		g_free (tmp);
-	}
-#endif
+		for (i = 0; i < 4; i++) {
+			NMWepKeyType key_type;
 
-	/* WEP keys */
-	/* Mandriva always sets key_idx == 0 */
-	key = nm_setting_wireless_security_get_wep_key (s_wsec, 0);
-	set_wep_secret (ifcfg, "WIRELESS_ENC_KEY", (wep && key) ? key : NULL, FALSE);
+			key = nm_setting_wireless_security_get_wep_key (s_wsec, i);
+			if (key) {
+				/* Passphrase needs a different ifcfg key since with WEP, there
+				 * are some passphrases that are indistinguishable from WEP hex
+				 * keys.
+				 */
+				key_type = nm_setting_wireless_security_get_wep_key_type (s_wsec);
+				if (key_type == NM_WEP_KEY_TYPE_PASSPHRASE)
+					tmp = g_strdup_printf ("KEY_PASSPHRASE%d", i + 1);
+				else
+					tmp = g_strdup_printf ("KEY%d", i + 1);
+
+				set_secret (ifcfg, tmp, key, FALSE);
+				g_free (tmp);
+			}
+		}
+#endif
+	}
 
 	/* FIXME What about roaming mode? */
 	if (wep) {
