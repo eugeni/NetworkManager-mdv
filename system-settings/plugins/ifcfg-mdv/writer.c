@@ -949,6 +949,7 @@ write_wired_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	}
 #endif
 
+	svSetValue (ifcfg, "MTU", NULL, FALSE);
 	mtu = nm_setting_wired_get_mtu (s_wired);
 	if (mtu) {
 		tmp = g_strdup_printf ("%u", mtu);
