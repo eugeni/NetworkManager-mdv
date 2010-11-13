@@ -3543,7 +3543,7 @@ connection_from_file (const char *filename,
 {
 	NMConnection *connection = NULL;
 	shvarFile *parsed;
-	char *type = NULL, *nmc = NULL;
+	char *type = NULL, *nmc = NULL, *tmp;
 	NMSetting *s_ip4;
 	gboolean nm_controlled = FALSE, onboot;
 	char *device = NULL;
@@ -3646,10 +3646,30 @@ connection_from_file (const char *filename,
 	       onboot = svTrueValue (parsed, "ONBOOT", TRUE);
 	       nm_controlled = nm_controlled && !onboot;
 
+		/* Ignore BRIDGE= and VLAN= connections for now too (rh #619863) */
+		tmp = svGetValue (parsed, "BRIDGE", FALSE);
+		if (tmp) {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				     "Bridge component connections are not yet supported");
+			g_free (tmp);
+			goto done;
+		}
+
+		tmp = svGetValue (parsed, "VLAN", FALSE);
+		if (tmp) {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				     "VLAN connections are not yet supported");
+			g_free (tmp);
+			goto done;
+		}
+
 		if (!strcasecmp (type, TYPE_ETHERNET))
 			connection = wired_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error);
 		else if (!strcasecmp (type, TYPE_WIRELESS))
 			connection = wireless_connection_from_ifcfg (filename, parsed, nm_controlled, unmanaged, device, error, ignore_error);
+		else if (!strcasecmp (type, TYPE_BRIDGE)) {
+			g_set_error (error, ifcfg_plugin_error_quark (), 0,
+				     "Bridge connections are not yet supported");
 		else {
 			g_set_error (error, ifcfg_plugin_error_quark (), 0,
 				     "Unknown connection type '%s'", type);
