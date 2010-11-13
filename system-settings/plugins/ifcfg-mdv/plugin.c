@@ -152,7 +152,7 @@ read_one_connection (SCPluginIfcfg *plugin, const char *filename)
 			PLUGIN_PRINT (IFCFG_PLUGIN_NAME, "    error: %s",
 			              (error && error->message) ? error->message : "(unknown)");
 		}
-		g_error_free (error);
+		g_clear_error (&error);
 	}
 
 	return connection;
@@ -312,7 +312,7 @@ dir_changed (GFileMonitor *monitor,
 {
 	SCPluginIfcfg *plugin = SC_PLUGIN_IFCFG (user_data);
 	SCPluginIfcfgPrivate *priv = SC_PLUGIN_IFCFG_GET_PRIVATE (plugin);
-	char *path;
+	char *path, *name;
 	NMIfcfgConnection *connection;
 	gboolean do_remove = FALSE, do_new = FALSE;
 
@@ -322,28 +322,32 @@ dir_changed (GFileMonitor *monitor,
 		return;
 	}
 
-	connection = g_hash_table_lookup (priv->connections, path);
-	if (!connection) {
-		do_new = TRUE;
-	} else {
-		switch (event_type) {
-		case G_FILE_MONITOR_EVENT_DELETED:
-			PLUGIN_PRINT (IFCFG_PLUGIN_NAME, "removed %s.", path);
-			do_remove = TRUE;
-			break;
-		case G_FILE_MONITOR_EVENT_CREATED:
-		case G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT:
-			/* Update */
-			connection_changed_handler (plugin, path, connection, &do_remove, &do_new);
-			break;
-		default:
-			break;
-		}
+	/* Given any ifcfg, keys, or routes file, get the ifcfg file path */
+	name = mdv_get_icfg_name (path);
+	g_free (path);
+
+	connection = g_hash_table_lookup (priv->connections, name);
+	switch (event_type) {
+	case G_FILE_MONITOR_EVENT_DELETED:
+		PLUGIN_PRINT (IFCFG_PLUGIN_NAME, "removed %s.", name);
+		if (connection)
+			handle_connection_remove_or_new (plugin, name, connection, TRUE, FALSE);
+		break;
+	case G_FILE_MONITOR_EVENT_CREATED:
+	case G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT:
+		/* Update */
+		if (!connection)
+			do_new = TRUE;
+		else
+			connection_changed_handler (plugin, name, connection, &do_remove, &do_new);
+
+		handle_connection_remove_or_new (plugin, name, connection, do_remove, do_new);
+		break;
+	default:
+		break;
 	}
 
-	handle_connection_remove_or_new (plugin, path, connection, do_remove, do_new);
-
-	g_free (path);
+	g_free (name);
 }
 
 static void
