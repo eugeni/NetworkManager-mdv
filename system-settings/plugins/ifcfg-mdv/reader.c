@@ -3610,7 +3610,7 @@ connection_from_file (const char *filename,
 		}
 
 		type = svGetValue (parsed, "TYPE", FALSE);
-			if (!type) {
+		if (!type) {
 
 			/* If no type, if the device has wireless extensions, it's wifi,
 			 * otherwise it's ethernet.
@@ -3677,17 +3677,17 @@ connection_from_file (const char *filename,
 		else if (!strcasecmp (type, TYPE_BRIDGE)) {
 			g_set_error (&error, IFCFG_PLUGIN_ERROR, 0,
 				     "Bridge connections are not yet supported");
-			goto done;
 		} else {
 			g_set_error (&error, IFCFG_PLUGIN_ERROR, 0,
 				     "Unknown connection type '%s'", type);
-			goto done;
 		}
 
 		if (nm_controlled) {
 			g_free (*unmanaged);
 			*unmanaged = NULL;
 		}
+
+		g_free (type);
 
 	} else if (ifcfg_type == MdvIfcfgTypeSSID) {
 		/* TODO directly jump to wireless WPA */
@@ -3715,6 +3715,7 @@ connection_from_file (const char *filename,
 				             ignore_reason == IGNORE_REASON_BRIDGE ? "Bridge" : "VLAN");
 			}
 		}
+		goto done;
 	}
 
 #if 0
@@ -3769,7 +3770,6 @@ connection_from_file (const char *filename,
 	*route6file = utils_get_route6_path (filename);
 
 done:
-	g_free (type);
 	g_free(device);
 	svCloseFile (parsed);
 	if (error && out_error)
