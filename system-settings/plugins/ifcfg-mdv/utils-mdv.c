@@ -133,7 +133,7 @@ out:
 }
 
 /*
- * mdv_get_ifcfg_path
+ * mdv_get_ifcfg_name
  * 
  *   return ifcfg name. For plain ifcfg-XXX this is XXX;
  *   for a file under .../wireless.d this is simply file name
@@ -149,6 +149,29 @@ mdv_get_ifcfg_name(const gchar *path)
 		case MdvIfcfgTypeSSID:
 		case MdvIfcfgTypeBSSID:
 			return g_path_get_basename(path);
+			break;
+		default:
+			return NULL;
+			break;
+	}
+}
+
+/*
+ * mdv_get_ifcfg_path
+ * 
+ *   return ifcfg path. For RH style names this is .../ifcfg-XXX
+ *   for a file under .../wireless.d this is simply file name
+ */
+gchar *
+mdv_get_ifcfg_path(const gchar *path)
+{
+	switch (mdv_get_ifcfg_type(path)) {
+		case MdvIfcfgTypeInterface:
+			return utils_get_ifcfg_path(path);
+			break;
+		case MdvIfcfgTypeSSID:
+		case MdvIfcfgTypeBSSID:
+			return g_strdup(path);
 			break;
 		default:
 			return NULL;
