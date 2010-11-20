@@ -11,9 +11,10 @@
 #
 ### BEGIN INIT INFO
 # Provides: networkmanager
-# Required-Start: $network $syslog
-# Should-Start: $named
-# Required-Stop: $network $syslog
+# Required-Start: $network messagebus
+# Should-Start: $named $syslog
+# Required-Stop: $network messagebus
+# Should-Stop: $syslog
 # Default-Start: 3 4 5
 # Short-Description: Daemon for automatically switching to best network connection.
 # Description: This is a daemon for automatically switching network
