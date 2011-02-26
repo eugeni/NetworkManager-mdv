@@ -1014,11 +1014,11 @@ write_connection_setting (NMSettingConnection *s_con, shvarFile *ifcfg)
 {
 	char *tmp;
 
-	// svSetValue (ifcfg, "NAME", nm_setting_connection_get_id (s_con), FALSE);
-	// svSetValue (ifcfg, "UUID", nm_setting_connection_get_uuid (s_con), FALSE);
-	/* FIXME temporary until we can use ONBOOT again */
-	svSetValue (ifcfg, "ONBOOT", "no", FALSE);
-	svSetValue (ifcfg, "_NM_ONBOOT",
+	svSetValue (ifcfg, "NAME", nm_setting_connection_get_id (s_con), FALSE);
+	svSetValue (ifcfg, "UUID", nm_setting_connection_get_uuid (s_con), FALSE);
+	/* when converting from eralier ifcfg */
+	svSetValue (ifcfg, "_NM_ONBOOT", NULL, FALSE);
+	svSetValue (ifcfg, "ONBOOT",
 	            nm_setting_connection_get_autoconnect (s_con) ? "yes" : "no",
 	            FALSE);
 

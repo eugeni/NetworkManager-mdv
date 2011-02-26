@@ -134,7 +134,7 @@ read_one_connection (SCPluginIfcfg *plugin, const char *filename)
 
 		if (nm_ifcfg_connection_get_unmanaged_spec (connection)) {
 			PLUGIN_PRINT (IFCFG_PLUGIN_NAME, "Ignoring connection '%s' and its "
-			              "device due to NM_CONTROLLED/ONBOOT/BRIDGE/VLAN.", cid);
+			              "device due to NM_CONTROLLED/BRIDGE/VLAN.", cid);
 		} else {
 			/* Wait for the connection to become unmanaged once it knows the
 			 * UDI of it's device, if/when the device gets plugged in.

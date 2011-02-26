@@ -122,7 +122,8 @@ make_connection_setting (const char *file,
 	NMSettingConnection *s_con;
 	char *ifcfg_name = NULL;
 	char *new_id = NULL, *uuid = NULL, *value;
-	// char *ifcfg_id;
+	char *ifcfg_id;
+	int onboot, nm_onboot;
 
 	ifcfg_name = mdv_get_ifcfg_name (file);
 	if (!ifcfg_name)
@@ -131,12 +132,9 @@ make_connection_setting (const char *file,
 	s_con = NM_SETTING_CONNECTION (nm_setting_connection_new ());
 
 	/* Try the ifcfg file's internally defined name if available */
-#if 0
-	/* Mandriva does not use or set NAME */
-	// ifcfg_id = svGetValue (ifcfg, "NAME", FALSE);
+	ifcfg_id = svGetValue (ifcfg, "NAME", FALSE);
 	if (ifcfg_id && strlen (ifcfg_id))
 		g_object_set (s_con, NM_SETTING_CONNECTION_ID, ifcfg_id, NULL);
-#endif
 
 	if (!nm_setting_connection_get_id (s_con)) {
 		if (suggested) {
@@ -158,12 +156,10 @@ make_connection_setting (const char *file,
 	}
 
 	g_free (new_id);
-	// g_free (ifcfg_id);
+	g_free (ifcfg_id);
 
-#if 0
 	/* Try for a UUID key before falling back to hashing the file name */
 	uuid = svGetValue (ifcfg, "UUID", FALSE);
-#endif
 	if (!uuid || !strlen (uuid)) {
 		g_free (uuid);
 		uuid = nm_utils_uuid_generate_from_string (ifcfg->fileName);
@@ -175,9 +171,13 @@ make_connection_setting (const char *file,
 	g_free (uuid);
 
 	/* Missing ONBOOT is treated as "ONBOOT=true" by the old network service */
-	/* FIXME temporary until we can use ONBOOT again */
+	onboot = svTrueValue (ifcfg, "ONBOOT", TRUE);
+	/* make sure existing ifcfg still works after migration */
+	nm_onboot = svTrueValue (ifcfg, "_NM_ONBOOT", -1);
+	if (nm_onboot != -1)
+		onboot = nm_onboot;
 	g_object_set (s_con, NM_SETTING_CONNECTION_AUTOCONNECT,
-	              svTrueValue (ifcfg, "_NM_ONBOOT", TRUE),
+	              onboot,
 	              NULL);
 
 	value = svGetValue (ifcfg, "LAST_CONNECT", FALSE);
@@ -3552,7 +3552,7 @@ connection_from_file (const char *filename,
 	shvarFile *parsed;
 	char *type = NULL, *nmc = NULL, *tmp;
 	NMSetting *s_ip4;
-	gboolean nm_controlled = FALSE, onboot;
+	gboolean nm_controlled = FALSE;
 	char *device = NULL;
 	MdvIfcfgType ifcfg_type;
 	gboolean ip6_used = FALSE;
@@ -3642,16 +3642,6 @@ connection_from_file (const char *filename,
 				nm_controlled = TRUE;
 			g_free (lower);
 		}
-
-	       /*
-		* FIXME
-		* ONBOOT is used by Mandriva initscripts. For now use different
-		* variable; otherwise both initscripts and NM will try to
-		* bring interface online. Do not try to control interface
-		* if ONBOOT was set to true
-		*/
-	       onboot = svTrueValue (parsed, "ONBOOT", TRUE);
-	       nm_controlled = nm_controlled && !onboot;
 
 		/* Ignore BRIDGE= and VLAN= connections for now too (rh #619863) */
 		tmp = svGetValue (parsed, "BRIDGE", FALSE);
