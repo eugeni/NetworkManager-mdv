@@ -70,6 +70,13 @@ to read and write configuration from the standard /etc/sysconfig/network-scripts
 It currently supports reading wired, WiFi, and 802.1x connections, but does not yet support reading
 or writing mobile broadband, PPPoE, or VPN connections. To allow reading and writing of these
 add \fIkeyfile\fP plugin to your configuration as well.
+.TP 
+.I ifcfg\-mdv
+plugin is used on the Mandriva distribution
+to read and write configuration from the standard files under /etc/sysconfig/network-scripts. Additionally wireless security information is taken from /etc/wpa_supplicant.conf.
+It currently supports reading wired, WiFi, and possibly 802.1x connections, but does not yet support reading
+or writing mobile broadband, PPPoE, or VPN connections. To allow reading and writing of these
+add \fIkeyfile\fP plugin to your configuration as well.
 .TP
 .I ifupdown
 plugin is used on the Debian and Ubuntu distributions, and reads connections from
