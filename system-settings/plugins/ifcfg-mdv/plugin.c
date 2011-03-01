@@ -81,6 +81,9 @@ typedef struct {
 
 	GFileMonitor *wireless_d_monitor;
 	guint wireless_d_monitor_id;
+
+	GFileMonitor *wpa_supplicant_monitor;
+	guint wpa_supplicant_monitor_id;
 } SCPluginIfcfgPrivate;
 
 
@@ -352,6 +355,55 @@ dir_changed (GFileMonitor *monitor,
 }
 
 static void
+update_wireless (gpointer data,
+		gpointer user_data)
+{
+	NMIfcfgConnection *connection = data;
+	SCPluginIfcfg *plugin = SC_PLUGIN_IFCFG (user_data);
+
+	connection_ifcfg_changed (connection, plugin);
+}
+
+static void
+add_wireless_d_connection (gpointer key,
+		gpointer value,
+		gpointer user_data)
+{
+	GSList **list = user_data;
+	char *ifcfg = key;
+	NMIfcfgConnection *connection = value;
+
+	if (mdv_get_ifcfg_type (ifcfg) == MdvIfcfgTypeSSID)
+		*list = g_slist_prepend (*list, g_object_ref (connection));
+}
+
+static void
+wpa_supplicant_changed (GFileMonitor *monitor,
+		   GFile *file,
+		   GFile *other_file,
+		   GFileMonitorEvent event_type,
+		   gpointer user_data)
+{
+	SCPluginIfcfg *plugin = SC_PLUGIN_IFCFG (user_data);
+	SCPluginIfcfgPrivate *priv = SC_PLUGIN_IFCFG_GET_PRIVATE (plugin);
+	GSList *list = NULL;
+
+	switch (event_type) {
+	case G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT:
+	case G_FILE_MONITOR_EVENT_CREATED:
+	case G_FILE_MONITOR_EVENT_DELETED:
+		g_hash_table_foreach (priv->connections, add_wireless_d_connection, &list);
+		break;
+	default:
+		return;
+		break;
+	}
+
+	g_slist_foreach (list, update_wireless, plugin);
+	g_slist_free_full (list, (GDestroyNotify) g_object_unref);
+}
+
+static void
 setup_ifcfg_monitoring (SCPluginIfcfg *plugin)
 {
 	SCPluginIfcfgPrivate *priv = SC_PLUGIN_IFCFG_GET_PRIVATE (plugin);
@@ -376,6 +428,15 @@ setup_ifcfg_monitoring (SCPluginIfcfg *plugin)
 	if (monitor) {
 		priv->wireless_d_monitor_id = g_signal_connect (monitor, "changed", G_CALLBACK (dir_changed), plugin);
 		priv->wireless_d_monitor = monitor;
+	}
+
+	file = g_file_new_for_path ("/etc/wpa_supplicant.conf");
+	monitor = g_file_monitor_file (file, G_FILE_MONITOR_NONE, NULL, NULL);
+	g_object_unref (file);
+
+	if (monitor) {
+		priv->wpa_supplicant_monitor_id = g_signal_connect (monitor, "changed", G_CALLBACK (wpa_supplicant_changed), plugin);
+		priv->wpa_supplicant_monitor = monitor;
 	}
 }
 
@@ -576,6 +637,14 @@ dispose (GObject *object)
 
 		g_file_monitor_cancel (priv->wireless_d_monitor);
 		g_object_unref (priv->wireless_d_monitor);
+	}
+
+	if (priv->wpa_supplicant_monitor) {
+		if (priv->wpa_supplicant_monitor_id)
+			g_signal_handler_disconnect (priv->wpa_supplicant_monitor, priv->wpa_supplicant_monitor_id);
+
+		g_file_monitor_cancel (priv->wpa_supplicant_monitor);
+		g_object_unref (priv->wpa_supplicant_monitor);
 	}
 
 	G_OBJECT_CLASS (sc_plugin_ifcfg_parent_class)->dispose (object);
