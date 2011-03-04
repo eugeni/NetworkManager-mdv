@@ -1,6 +1,6 @@
 [Unit]
 Description=Network Manager
-After=syslog.target
+After=syslog.target resolvconf.service
 
 [Service]
 Type=dbus
