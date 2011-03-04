@@ -12,7 +12,7 @@
 ### BEGIN INIT INFO
 # Provides: networkmanager
 # Required-Start: $network messagebus
-# Should-Start: $named $syslog
+# Should-Start: $named $syslog resolvconf
 # Required-Stop: $network messagebus
 # Should-Stop: $syslog
 # Default-Start: 3 4 5
