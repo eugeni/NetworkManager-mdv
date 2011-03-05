@@ -203,7 +203,7 @@ dump_wireless (NMDeviceWifi *device)
 
 	g_print ("AccessPoints:\n");
 	aps = nm_device_wifi_get_access_points (device);
-	for (i = 0; i < aps->len; i++) {
+	for (i = 0; aps && (i < aps->len); i++) {
 		dump_access_point (NM_ACCESS_POINT (g_ptr_array_index (aps, i)));
 		g_print ("\n");
 	}
@@ -320,7 +320,8 @@ test_get_active_connections (NMClient *client)
 
 		g_print ("    %s\n", nm_object_get_path (g_ptr_array_index (connections, i)));
 		devices = nm_active_connection_get_devices (g_ptr_array_index (connections, i));
-		g_ptr_array_foreach ((GPtrArray *) devices, show_active_connection_device, NULL);
+		if (devices)
+			g_ptr_array_foreach ((GPtrArray *) devices, show_active_connection_device, NULL);
 	}
 }
 

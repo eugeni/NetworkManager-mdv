@@ -14,7 +14,7 @@
  * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
- * (C) Copyright 2010 Red Hat, Inc.
+ * (C) Copyright 2010 - 2011 Red Hat, Inc.
  */
 
 #include <stdio.h>
@@ -99,8 +99,8 @@ static NMCResultCode
 show_nm_status (NmCli *nmc)
 {
 	gboolean nm_running;
-	gboolean net_enabled;
-	NMState state;
+	NMState state = NM_STATE_UNKNOWN;
+	const char *net_enabled_str;
 	const char *wireless_hw_enabled_str, *wireless_enabled_str;
 	const char *wwan_hw_enabled_str, *wwan_enabled_str;
 	GError *error = NULL;
@@ -110,8 +110,6 @@ show_nm_status (NmCli *nmc)
 	guint32 mode_flag = (nmc->print_output == NMC_PRINT_PRETTY) ? NMC_PF_FLAG_PRETTY : (nmc->print_output == NMC_PRINT_TERSE) ? NMC_PF_FLAG_TERSE : 0;
 	guint32 multiline_flag = nmc->multiline_output ? NMC_PF_FLAG_MULTILINE : 0;
 	guint32 escape_flag = nmc->escape_values ? NMC_PF_FLAG_ESCAPE : 0;
-
-	g_return_val_if_fail (nmc->client != NULL, NMC_RESULT_ERROR_UNKNOWN);
 
 	if (!nmc->required_fields || strcasecmp (nmc->required_fields, "common") == 0)
 		fields_str = fields_common;
@@ -137,21 +135,22 @@ show_nm_status (NmCli *nmc)
 	nmc->print_fields.header_name = _("NetworkManager status");
 	print_fields (nmc->print_fields, nmc->allowed_fields); /* Print header */
 
-	nm_running = nm_client_get_manager_running (nmc->client);
-	state = nm_client_get_state (nmc->client);
-	net_enabled = nm_client_networking_get_enabled (nmc->client);
+	nm_running = nmc_is_nm_running (nmc, NULL);
 	if (nm_running) {
+		nmc->get_client (nmc); /* create NMClient */
+		state = nm_client_get_state (nmc->client);
+		net_enabled_str = nm_client_networking_get_enabled (nmc->client) ? _("enabled") : _("disabled");
 		wireless_hw_enabled_str = nm_client_wireless_hardware_get_enabled (nmc->client) ? _("enabled") : _("disabled");
 		wireless_enabled_str = nm_client_wireless_get_enabled (nmc->client) ? _("enabled") : _("disabled");
 		wwan_hw_enabled_str = nm_client_wwan_hardware_get_enabled (nmc->client) ? _("enabled") : _("disabled");
 		wwan_enabled_str = nm_client_wwan_get_enabled (nmc->client) ? _("enabled") : _("disabled");
 	} else {
-		wireless_hw_enabled_str = wireless_enabled_str = wwan_hw_enabled_str = wwan_enabled_str = _("unknown");
+		net_enabled_str = wireless_hw_enabled_str = wireless_enabled_str = wwan_hw_enabled_str = wwan_enabled_str = _("unknown");
 	}
 
 	nmc->allowed_fields[0].value = nm_running ? _("running") : _("not running");
 	nmc->allowed_fields[1].value = nm_state_to_string (state);
-	nmc->allowed_fields[2].value = net_enabled ? _("enabled") : _("disabled");
+	nmc->allowed_fields[2].value = net_enabled_str;
 	nmc->allowed_fields[3].value = wireless_hw_enabled_str;
 	nmc->allowed_fields[4].value = wireless_enabled_str;
 	nmc->allowed_fields[5].value = wwan_hw_enabled_str;
@@ -212,10 +211,6 @@ do_network_manager (NmCli *nmc, int argc, char **argv)
 	guint32 multiline_flag = nmc->multiline_output ? NMC_PF_FLAG_MULTILINE : 0;
 	guint32 escape_flag = nmc->escape_values ? NMC_PF_FLAG_ESCAPE : 0;
 
-	/* create NMClient */
-	if (!nmc->get_client (nmc))
-		goto end;
-
 	if (argc == 0) {
 		if (!nmc_terse_option_check (nmc->print_output, nmc->required_fields, &error))
 			goto opt_error;
@@ -244,9 +239,14 @@ do_network_manager (NmCli *nmc, int argc, char **argv)
 				nmc->print_fields.flags = multiline_flag | mode_flag | escape_flag | NMC_PF_FLAG_MAIN_HEADER_ADD | NMC_PF_FLAG_FIELD_NAMES;
 				nmc->print_fields.header_name = _("Networking enabled");
 				print_fields (nmc->print_fields, nmc->allowed_fields); /* Print header */
-				nmc->allowed_fields[2].value = nm_client_networking_get_enabled (nmc->client) ? _("enabled") : _("disabled");
+
+				if (nmc_is_nm_running (nmc, NULL)) {
+					nmc->get_client (nmc); /* create NMClient */
+					nmc->allowed_fields[2].value = nm_client_networking_get_enabled (nmc->client) ? _("enabled") : _("disabled");
+				} else
+					nmc->allowed_fields[2].value = _("unknown");
 				nmc->print_fields.flags = multiline_flag | mode_flag | escape_flag;
-				print_fields (nmc->print_fields, nmc->allowed_fields); /* Print header */
+				print_fields (nmc->print_fields, nmc->allowed_fields); /* Print values */
 			} else {
 				if (!strcmp (*argv, "true"))
 					enable_net = TRUE;
@@ -257,6 +257,7 @@ do_network_manager (NmCli *nmc, int argc, char **argv)
 					nmc->return_value = NMC_RESULT_ERROR_USER_INPUT;
 					goto end;
 				}
+				nmc->get_client (nmc); /* create NMClient */
 				nm_client_networking_set_enabled (nmc->client, enable_net);
 			}
 		}
@@ -293,9 +294,14 @@ do_network_manager (NmCli *nmc, int argc, char **argv)
 				nmc->print_fields.flags = multiline_flag | mode_flag | escape_flag | NMC_PF_FLAG_MAIN_HEADER_ADD | NMC_PF_FLAG_FIELD_NAMES;
 				nmc->print_fields.header_name = _("WiFi enabled");
 				print_fields (nmc->print_fields, nmc->allowed_fields); /* Print header */
-				nmc->allowed_fields[4].value = nm_client_wireless_get_enabled (nmc->client) ? _("enabled") : _("disabled");
+
+				if (nmc_is_nm_running (nmc, NULL)) {
+					nmc->get_client (nmc); /* create NMClient */
+					nmc->allowed_fields[4].value = nm_client_wireless_get_enabled (nmc->client) ? _("enabled") : _("disabled");
+				} else
+					nmc->allowed_fields[4].value = _("unknown");
 				nmc->print_fields.flags = multiline_flag | mode_flag | escape_flag;
-				print_fields (nmc->print_fields, nmc->allowed_fields); /* Print header */
+				print_fields (nmc->print_fields, nmc->allowed_fields); /* Print values */
 			} else {
 				if (!strcmp (*argv, "on"))
 					enable_wifi = TRUE;
@@ -306,6 +312,7 @@ do_network_manager (NmCli *nmc, int argc, char **argv)
 					nmc->return_value = NMC_RESULT_ERROR_USER_INPUT;
 					goto end;
 				}
+				nmc->get_client (nmc); /* create NMClient */
 				nm_client_wireless_set_enabled (nmc->client, enable_wifi);
 			}
 		}
@@ -325,9 +332,14 @@ do_network_manager (NmCli *nmc, int argc, char **argv)
 				nmc->print_fields.flags = multiline_flag | mode_flag | escape_flag | NMC_PF_FLAG_MAIN_HEADER_ADD | NMC_PF_FLAG_FIELD_NAMES;
 				nmc->print_fields.header_name = _("WWAN enabled");
 				print_fields (nmc->print_fields, nmc->allowed_fields); /* Print header */
-				nmc->allowed_fields[6].value = nm_client_wwan_get_enabled (nmc->client) ? _("enabled") : _("disabled");
+
+				if (nmc_is_nm_running (nmc, NULL)) {
+					nmc->get_client (nmc); /* create NMClient */
+					nmc->allowed_fields[6].value = nm_client_wwan_get_enabled (nmc->client) ? _("enabled") : _("disabled");
+				} else
+					nmc->allowed_fields[6].value = _("unknown");
 				nmc->print_fields.flags = multiline_flag | mode_flag | escape_flag;
-				print_fields (nmc->print_fields, nmc->allowed_fields); /* Print header */
+				print_fields (nmc->print_fields, nmc->allowed_fields); /* Print values */
 			} else {
 				if (!strcmp (*argv, "on"))
 					enable_wwan = TRUE;
@@ -338,6 +350,7 @@ do_network_manager (NmCli *nmc, int argc, char **argv)
 					nmc->return_value = NMC_RESULT_ERROR_USER_INPUT;
 					goto end;
 				}
+				nmc->get_client (nmc); /* create NMClient */
 				nm_client_wwan_set_enabled (nmc->client, enable_wwan);
 			}
 		}

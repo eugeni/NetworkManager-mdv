@@ -790,6 +790,7 @@ addrconf6_setup (NMDevice *self)
 	NMActRequest *req;
 	NMConnection *connection;
 	NMSettingIP6Config *s_ip6;
+	gboolean success;
 
 	req = nm_device_get_act_request (self);
 	g_assert (req);
@@ -809,13 +810,14 @@ addrconf6_setup (NMDevice *self)
 	}
 
 	s_ip6 = (NMSettingIP6Config *) nm_connection_get_setting (connection, NM_TYPE_SETTING_IP6_CONFIG);
-	nm_ip6_manager_prepare_interface (priv->ip6_manager,
-	                                  nm_device_get_ip_ifindex (self),
-	                                  s_ip6,
-	                                  priv->ip6_accept_ra_path);
-	priv->ip6_waiting_for_config = TRUE;
+	success = nm_ip6_manager_prepare_interface (priv->ip6_manager,
+	                                            nm_device_get_ip_ifindex (self),
+	                                            s_ip6,
+	                                            priv->ip6_accept_ra_path);
+	if (success)
+		priv->ip6_waiting_for_config = TRUE;
 
-	return TRUE;
+	return success;
 }
 
 static void
@@ -1951,7 +1953,9 @@ nm_device_activate_stage4_ip4_config_get (gpointer user_data)
 	g_object_set_data (G_OBJECT (nm_device_get_act_request (self)),
 					   NM_ACT_REQUEST_IP4_CONFIG, ip4_config);
 
+nm_log_info (LOGD_DEVICE | LOGD_IP4, "Scheduling stage 5");
 	nm_device_activate_schedule_stage5_ip_config_commit (self, AF_INET);
+nm_log_info (LOGD_DEVICE | LOGD_IP4, "Done scheduling stage 5");
 
 out:
 	nm_log_info (LOGD_DEVICE | LOGD_IP4,
@@ -2803,17 +2807,22 @@ nm_device_deactivate (NMDeviceInterface *device, NMDeviceStateReason reason)
 {
 	NMDevice *self = NM_DEVICE (device);
 	NMDeviceStateReason ignored = NM_DEVICE_STATE_REASON_NONE;
+	gboolean tried_ipv6 = FALSE;
 
 	g_return_if_fail (self != NULL);
 
 	nm_log_info (LOGD_DEVICE, "(%s): deactivating device (reason: %d).",
 	             nm_device_get_iface (self), reason);
 
+	/* Check this before deactivate_quickly is run */
+	if (NM_DEVICE_GET_PRIVATE (self)->ip6_manager)
+		tried_ipv6 = TRUE;
+
 	nm_device_deactivate_quickly (self);
 
 	/* Take out any entries in the routing table and any IP address the device had. */
-	nm_system_device_flush_routes (self, nm_device_get_ip6_config (self) ? AF_UNSPEC : AF_INET);
-	nm_system_device_flush_addresses (self);
+	nm_system_device_flush_routes (self, tried_ipv6 ? AF_UNSPEC : AF_INET);
+	nm_system_device_flush_addresses (self, tried_ipv6 ? AF_UNSPEC : AF_INET);
 	nm_device_update_ip4_address (self);	
 
 	/* Clean up nameservers and addresses */
@@ -3321,7 +3330,7 @@ dispose (GObject *object)
 	if (   nm_device_interface_can_assume_connections (NM_DEVICE_INTERFACE (self))
 	    && (nm_device_get_state (self) == NM_DEVICE_STATE_ACTIVATED)) {
 		NMConnection *connection;
-	    NMSettingIP4Config *s_ip4;
+	    NMSettingIP4Config *s_ip4 = NULL;
 		const char *method = NULL;
 
 		/* Only system connections can be left up */
@@ -3334,9 +3343,8 @@ dispose (GObject *object)
 			 * to check that.
 			 */
 			s_ip4 = (NMSettingIP4Config *) nm_connection_get_setting (connection, NM_TYPE_SETTING_IP4_CONFIG);
-			g_assert (s_ip4);
-
-			method = nm_setting_ip4_config_get_method (s_ip4);
+			if (s_ip4)
+				method = nm_setting_ip4_config_get_method (s_ip4);
 			if (   !method
 			    || !strcmp (method, NM_SETTING_IP4_CONFIG_METHOD_AUTO)
 			    || !strcmp (method, NM_SETTING_IP4_CONFIG_METHOD_MANUAL))

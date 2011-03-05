@@ -556,6 +556,89 @@ nm_connection_compare (NMConnection *a,
 	return info.failed ? FALSE : TRUE;
 }
 
+
+static void
+diff_one_connection (NMConnection *a,
+                     NMConnection *b,
+                     NMSettingCompareFlags flags,
+                     gboolean invert_results,
+                     GHashTable *diffs)
+{
+	NMConnectionPrivate *priv = NM_CONNECTION_GET_PRIVATE (a);
+	GHashTableIter iter;
+	NMSetting *a_setting = NULL;
+
+	g_hash_table_iter_init (&iter, priv->settings);
+	while (g_hash_table_iter_next (&iter, NULL, (gpointer) &a_setting)) {
+		NMSetting *b_setting = NULL;
+		const char *setting_name = nm_setting_get_name (a_setting);
+		GHashTable *results;
+		gboolean new_results = TRUE;
+
+		if (b)
+			b_setting = nm_connection_get_setting (b, G_OBJECT_TYPE (a_setting));
+
+		results = g_hash_table_lookup (diffs, setting_name);
+		if (results)
+			new_results = FALSE;
+
+		if (!nm_setting_diff (a_setting, b_setting, flags, invert_results, &results)) {
+			if (new_results)
+				g_hash_table_insert (diffs, g_strdup (setting_name), results);
+		}
+	}
+}
+
+/**
+ * nm_connection_diff:
+ * @a: a #NMConnection
+ * @b: a second #NMConnection to compare with the first
+ * @flags: compare flags, e.g. %NM_SETTING_COMPARE_FLAG_EXACT
+ * @out_settings: if the connections differ, on return a hash table mapping
+ * setting names to second-level GHashTable, which contains key names that differ
+ *
+ * Compares two #NMConnection objects for similarity, with comparison behavior
+ * modified by a set of flags.  See nm_setting_compare() for a description of
+ * each flag's behavior.  If the connections differ, settings and keys within
+ * each setting that differ are added to the returned @out_settings hash table.
+ * No values are returned, only key names.
+ *
+ * Returns: %TRUE if the connections contain the same values, %FALSE if they do
+ * not
+ **/
+gboolean
+nm_connection_diff (NMConnection *a,
+                    NMConnection *b,
+                    NMSettingCompareFlags flags,
+                    GHashTable **out_settings)
+{
+	GHashTable *diffs;
+
+	g_return_val_if_fail (a != NULL, FALSE);
+	g_return_val_if_fail (NM_IS_CONNECTION (a), FALSE);
+	g_return_val_if_fail (out_settings != NULL, FALSE);
+	g_return_val_if_fail (*out_settings == NULL, FALSE);
+	if (b)
+		g_return_val_if_fail (NM_IS_CONNECTION (b), FALSE);
+
+	if (a == b)
+		return TRUE;
+
+	diffs = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, (GDestroyNotify) g_hash_table_destroy);
+
+	/* Diff A to B, then B to A to capture keys in B that aren't in A */
+	diff_one_connection (a, b, flags, FALSE, diffs);
+	if (b)
+		diff_one_connection (b, a, flags, TRUE, diffs);
+
+	if (g_hash_table_size (diffs) == 0)
+		g_hash_table_destroy (diffs);
+	else
+		*out_settings = diffs;
+
+	return *out_settings ? FALSE : TRUE;
+}
+
 /**
  * nm_connection_verify:
  * @connection: the #NMConnection to verify
@@ -624,7 +707,7 @@ nm_connection_verify (NMConnection *connection, GError **error)
  * nm_connection_update_secrets:
  * @connection: the #NMConnection
  * @setting_name: the setting object name to which the secrets apply
- * @secrets: a #GHashTable mapping string:#GValue of setting property names and
+ * @setting_secrets: a #GHashTable mapping string:#GValue of setting property names and
  * secrets
  * @error: location to store error, or %NULL
  *
@@ -637,7 +720,7 @@ nm_connection_verify (NMConnection *connection, GError **error)
 gboolean
 nm_connection_update_secrets (NMConnection *connection,
                               const char *setting_name,
-                              GHashTable *secrets,
+                              GHashTable *setting_secrets,
                               GError **error)
 {
 	NMSetting *setting;
@@ -646,19 +729,20 @@ nm_connection_update_secrets (NMConnection *connection,
 	g_return_val_if_fail (connection != NULL, FALSE);
 	g_return_val_if_fail (NM_IS_CONNECTION (connection), FALSE);
 	g_return_val_if_fail (setting_name != NULL, FALSE);
-	g_return_val_if_fail (secrets != NULL, FALSE);
+	g_return_val_if_fail (setting_secrets != NULL, FALSE);
 	if (error)
 		g_return_val_if_fail (*error == NULL, FALSE);
 
 	setting = nm_connection_get_setting (connection, nm_connection_lookup_setting_type (setting_name));
 	if (!setting) {
-		g_set_error (error, NM_CONNECTION_ERROR,
-		             NM_CONNECTION_ERROR_CONNECTION_SETTING_NOT_FOUND,
-		             "%s", setting_name);
+		g_set_error_literal (error,
+		                     NM_CONNECTION_ERROR,
+		                     NM_CONNECTION_ERROR_CONNECTION_SETTING_NOT_FOUND,
+		                     setting_name);
 		return FALSE;
 	}
 
-	success = nm_setting_update_secrets (setting, secrets, error);
+	success = nm_setting_update_secrets (setting, setting_secrets, error);
 	if (success)
 		g_signal_emit (connection, signals[SECRETS_UPDATED], 0, setting_name);
 	return success;

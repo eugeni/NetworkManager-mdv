@@ -33,10 +33,7 @@
 #include <nm-setting-wired.h>
 #include <nm-setting-wireless.h>
 #include <nm-setting-bluetooth.h>
-#include <nm-setting-serial.h>
-#include <nm-setting-gsm.h>
-#include <nm-setting-cdma.h>
-#include <nm-setting-ppp.h>
+#include <nm-setting-8021x.h>
 #include <arpa/inet.h>
 #include <netinet/ether.h>
 #include <string.h>
@@ -169,7 +166,7 @@ next:
 }
 
 static void
-ip4_addr_parser (NMSetting *setting, const char *key, GKeyFile *keyfile)
+ip4_addr_parser (NMSetting *setting, const char *key, GKeyFile *keyfile, const char *keyfile_path)
 {
 	GPtrArray *addresses;
 	const char *setting_name = nm_setting_get_name (setting);
@@ -275,7 +272,7 @@ next:
 }
 
 static void
-ip4_route_parser (NMSetting *setting, const char *key, GKeyFile *keyfile)
+ip4_route_parser (NMSetting *setting, const char *key, GKeyFile *keyfile, const char *keyfile_path)
 {
 	GPtrArray *routes;
 	const char *setting_name = nm_setting_get_name (setting);
@@ -289,7 +286,7 @@ ip4_route_parser (NMSetting *setting, const char *key, GKeyFile *keyfile)
 }
 
 static void
-ip4_dns_parser (NMSetting *setting, const char *key, GKeyFile *keyfile)
+ip4_dns_parser (NMSetting *setting, const char *key, GKeyFile *keyfile, const char *keyfile_path)
 {
 	const char *setting_name = nm_setting_get_name (setting);
 	GArray *array = NULL;
@@ -462,7 +459,7 @@ next:
 }
 
 static void
-ip6_addr_parser (NMSetting *setting, const char *key, GKeyFile *keyfile)
+ip6_addr_parser (NMSetting *setting, const char *key, GKeyFile *keyfile, const char *keyfile_path)
 {
 	GPtrArray *addresses;
 	const char *setting_name = nm_setting_get_name (setting);
@@ -591,7 +588,7 @@ next:
 }
 
 static void
-ip6_route_parser (NMSetting *setting, const char *key, GKeyFile *keyfile)
+ip6_route_parser (NMSetting *setting, const char *key, GKeyFile *keyfile, const char *keyfile_path)
 {
 	GPtrArray *routes;
 	const char *setting_name = nm_setting_get_name (setting);
@@ -612,7 +609,7 @@ free_one_ip6_dns (gpointer data, gpointer user_data)
 }
 
 static void
-ip6_dns_parser (NMSetting *setting, const char *key, GKeyFile *keyfile)
+ip6_dns_parser (NMSetting *setting, const char *key, GKeyFile *keyfile, const char *keyfile_path)
 {
 	const char *setting_name = nm_setting_get_name (setting);
 	GPtrArray *array = NULL;
@@ -649,7 +646,7 @@ ip6_dns_parser (NMSetting *setting, const char *key, GKeyFile *keyfile)
 }
 
 static void
-mac_address_parser (NMSetting *setting, const char *key, GKeyFile *keyfile)
+mac_address_parser (NMSetting *setting, const char *key, GKeyFile *keyfile, const char *keyfile_path)
 {
 	const char *setting_name = nm_setting_get_name (setting);
 	struct ether_addr *eth;
@@ -732,10 +729,11 @@ read_hash_of_string (GKeyFile *file, NMSetting *setting, const char *key)
 	g_strfreev (keys);
 }
 
-static void
-ssid_parser (NMSetting *setting, const char *key, GKeyFile *keyfile)
+static GByteArray *
+get_uchar_array (GKeyFile *keyfile,
+                 const char *setting_name,
+                 const char *key)
 {
-	const char *setting_name = nm_setting_get_name (setting);
 	GByteArray *array = NULL;
 	char *p, *tmp_string;
 	gint *tmp_list;
@@ -764,42 +762,135 @@ ssid_parser (NMSetting *setting, const char *key, GKeyFile *keyfile)
 		if (new_format) {
 			array = g_byte_array_sized_new (strlen (tmp_string));
 			g_byte_array_append (array, (guint8 *) tmp_string, strlen (tmp_string));
-			goto done;
 		}
+		g_free (tmp_string);
 	}
-	g_free (tmp_string);
 
-	/* Old format; list of ints */
-	tmp_list = g_key_file_get_integer_list (keyfile, setting_name, key, &length, NULL);
-	array = g_byte_array_sized_new (length);
-	for (i = 0; i < length; i++) {
-		int val = tmp_list[i];
-		unsigned char v = (unsigned char) (val & 0xFF);
+	if (!array) {
+		/* Old format; list of ints */
+		tmp_list = g_key_file_get_integer_list (keyfile, setting_name, key, &length, NULL);
+		array = g_byte_array_sized_new (length);
+		for (i = 0; i < length; i++) {
+			int val = tmp_list[i];
+			unsigned char v = (unsigned char) (val & 0xFF);
 
-		if (val < 0 || val > 255) {
-			g_warning ("%s: %s / %s ignoring invalid byte element '%d' (not "
-			           " between 0 and 255 inclusive)", __func__, setting_name,
-			           key, val);
-		} else
-			g_byte_array_append (array, (const unsigned char *) &v, sizeof (v));
+			if (val < 0 || val > 255) {
+				g_warning ("%s: %s / %s ignoring invalid byte element '%d' (not "
+					       " between 0 and 255 inclusive)", __func__, setting_name,
+					       key, val);
+			} else
+				g_byte_array_append (array, (const unsigned char *) &v, sizeof (v));
+		}
+		g_free (tmp_list);
 	}
-	g_free (tmp_list);
 
-done:
-	if (array->len)
+	if (array->len == 0) {
+		g_byte_array_free (array, TRUE);
+		array = NULL;
+	}
+	return array;
+}
+
+static void
+ssid_parser (NMSetting *setting, const char *key, GKeyFile *keyfile, const char *keyfile_path)
+{
+	const char *setting_name = nm_setting_get_name (setting);
+	GByteArray *array;
+
+	array = get_uchar_array (keyfile, setting_name, key);
+	if (array) {
 		g_object_set (setting, key, array, NULL);
-	else {
+		g_byte_array_free (array, TRUE);
+	} else {
 		g_warning ("%s: ignoring invalid SSID for %s / %s",
 		           __func__, setting_name, key);
 	}
-	g_byte_array_free (array, TRUE);
+}
+
+static char *
+get_cert_path (const char *keyfile_path, GByteArray *cert_path)
+{
+	const char *base;
+	char *p = NULL, *path, *dirname, *tmp;
+
+	g_return_val_if_fail (keyfile_path != NULL, NULL);
+	g_return_val_if_fail (cert_path != NULL, NULL);
+
+	base = path = g_malloc0 (cert_path->len + 1);
+	memcpy (path, cert_path->data, cert_path->len);
+
+	if (path[0] == '/')
+		return path;
+
+	p = strrchr (path, '/');
+	if (p)
+		base = p + 1;
+
+	dirname = g_path_get_dirname (keyfile_path);
+	tmp = g_build_path ("/", dirname, base, NULL);
+	g_free (dirname);
+	g_free (path);
+	return tmp;
+}
+
+#define SCHEME_PATH "file://"
+
+static void
+cert_parser (NMSetting *setting, const char *key, GKeyFile *keyfile, const char *keyfile_path)
+{
+	const char *setting_name = nm_setting_get_name (setting);
+	GByteArray *array;
+	gboolean success = FALSE;
+
+	array = get_uchar_array (keyfile, setting_name, key);
+	if (array) {
+		/* Value could be either:
+		 * 1) the raw key/cert data as a blob
+		 * 2) a path scheme (ie, starts with "file://")
+		 * 3) a plain path
+		 */
+		if (   (array->len > strlen (SCHEME_PATH))
+		    && g_str_has_prefix ((const char *) array->data, SCHEME_PATH)
+		    && (array->data[array->len - 1] == '\0')) {
+			/* It's the PATH scheme, can just set plain data */
+			g_object_set (setting, key, array, NULL);
+			success = TRUE;
+		} else if (   (array->len < 500)
+		           && g_utf8_validate ((const char *) array->data, array->len, NULL)) {
+	    	GByteArray *val;
+			char *path;
+
+			path = get_cert_path (keyfile_path, array);
+		    if (g_file_test (path, G_FILE_TEST_EXISTS)) {
+				/* Construct the proper value as required for the PATH scheme */
+				val = g_byte_array_sized_new (strlen (SCHEME_PATH) + array->len + 1);
+				g_byte_array_append (val, (const guint8 *) SCHEME_PATH, strlen (SCHEME_PATH));
+				g_byte_array_append (val, array->data, array->len);
+				g_byte_array_append (val, (const guint8 *) "\0", 1);
+				g_object_set (setting, key, val, NULL);
+				g_byte_array_free (val, TRUE);
+				success = TRUE;
+		    }
+			g_free (path);
+		}
+
+		if (!success) {
+			/* Assume it's a simple blob value of the certificate or private key's data */
+			g_object_set (setting, key, array, NULL);
+		}
+
+		g_byte_array_free (array, TRUE);
+	} else {
+		g_warning ("%s: ignoring invalid SSID for %s / %s",
+		           __func__, setting_name, key);
+	}
 }
 
 typedef struct {
 	const char *setting_name;
 	const char *key;
 	gboolean check_for_key;
-	void (*parser) (NMSetting *setting, const char *key, GKeyFile *keyfile);
+	void (*parser) (NMSetting *setting, const char *key, GKeyFile *keyfile, const char *keyfile_path);
 } KeyParser;
 
 /* A table of keys that require further parsing/conversion because they are
@@ -861,8 +952,37 @@ static KeyParser key_parsers[] = {
 	  NM_SETTING_WIRELESS_SSID,
 	  TRUE,
 	  ssid_parser },
+	{ NM_SETTING_802_1X_SETTING_NAME,
+	  NM_SETTING_802_1X_CA_CERT,
+	  TRUE,
+	  cert_parser },
+	{ NM_SETTING_802_1X_SETTING_NAME,
+	  NM_SETTING_802_1X_CLIENT_CERT,
+	  TRUE,
+	  cert_parser },
+	{ NM_SETTING_802_1X_SETTING_NAME,
+	  NM_SETTING_802_1X_PRIVATE_KEY,
+	  TRUE,
+	  cert_parser },
+	{ NM_SETTING_802_1X_SETTING_NAME,
+	  NM_SETTING_802_1X_PHASE2_CA_CERT,
+	  TRUE,
+	  cert_parser },
+	{ NM_SETTING_802_1X_SETTING_NAME,
+	  NM_SETTING_802_1X_PHASE2_CLIENT_CERT,
+	  TRUE,
+	  cert_parser },
+	{ NM_SETTING_802_1X_SETTING_NAME,
+	  NM_SETTING_802_1X_PHASE2_PRIVATE_KEY,
+	  TRUE,
+	  cert_parser },
 	{ NULL, NULL, FALSE }
 };
+
+typedef struct {
+	GKeyFile *keyfile;
+	const char *keyfile_path;
+} ReadInfo;
 
 static void
 read_one_setting_value (NMSetting *setting,
@@ -871,7 +991,7 @@ read_one_setting_value (NMSetting *setting,
                         GParamFlags flags,
                         gpointer user_data)
 {
-	GKeyFile *file = user_data;
+	ReadInfo *info = user_data;
 	const char *setting_name;
 	GType type;
 	GError *err = NULL;
@@ -911,7 +1031,7 @@ read_one_setting_value (NMSetting *setting,
 	 * like IP addresses and routes where more than one value is actually
 	 * encoded by the setting property, this won't be true.
 	 */
-	if (check_for_key && !g_key_file_has_key (file, setting_name, key, &err)) {
+	if (check_for_key && !g_key_file_has_key (info->keyfile, setting_name, key, &err)) {
 		/* Key doesn't exist or an error ocurred, thus nothing to do. */
 		if (err) {
 			g_warning ("Error loading setting '%s' value: %s", setting_name, err->message);
@@ -924,7 +1044,7 @@ read_one_setting_value (NMSetting *setting,
 	 * parsers below.
 	 */
 	if (parser && parser->setting_name) {
-		(*parser->parser) (setting, key, file);
+		(*parser->parser) (setting, key, info->keyfile, info->keyfile_path);
 		return;
 	}
 
@@ -933,30 +1053,30 @@ read_one_setting_value (NMSetting *setting,
 	if (type == G_TYPE_STRING) {
 		char *str_val;
 
-		str_val = g_key_file_get_string (file, setting_name, key, NULL);
+		str_val = g_key_file_get_string (info->keyfile, setting_name, key, NULL);
 		g_object_set (setting, key, str_val, NULL);
 		g_free (str_val);
 	} else if (type == G_TYPE_UINT) {
 		int int_val;
 
-		int_val = g_key_file_get_integer (file, setting_name, key, NULL);
+		int_val = g_key_file_get_integer (info->keyfile, setting_name, key, NULL);
 		if (int_val < 0)
 			g_warning ("Casting negative value (%i) to uint", int_val);
 		g_object_set (setting, key, int_val, NULL);
 	} else if (type == G_TYPE_INT) {
 		int int_val;
 
-		int_val = g_key_file_get_integer (file, setting_name, key, NULL);
+		int_val = g_key_file_get_integer (info->keyfile, setting_name, key, NULL);
 		g_object_set (setting, key, int_val, NULL);
 	} else if (type == G_TYPE_BOOLEAN) {
 		gboolean bool_val;
 
-		bool_val = g_key_file_get_boolean (file, setting_name, key, NULL);
+		bool_val = g_key_file_get_boolean (info->keyfile, setting_name, key, NULL);
 		g_object_set (setting, key, bool_val, NULL);
 	} else if (type == G_TYPE_CHAR) {
 		int int_val;
 
-		int_val = g_key_file_get_integer (file, setting_name, key, NULL);
+		int_val = g_key_file_get_integer (info->keyfile, setting_name, key, NULL);
 		if (int_val < G_MININT8 || int_val > G_MAXINT8)
 			g_warning ("Casting value (%i) to char", int_val);
 
@@ -965,7 +1085,7 @@ read_one_setting_value (NMSetting *setting,
 		char *tmp_str;
 		guint64 uint_val;
 
-		tmp_str = g_key_file_get_value (file, setting_name, key, NULL);
+		tmp_str = g_key_file_get_value (info->keyfile, setting_name, key, NULL);
 		uint_val = g_ascii_strtoull (tmp_str, NULL, 10);
 		g_free (tmp_str);
 		g_object_set (setting, key, uint_val, NULL);
@@ -975,7 +1095,7 @@ read_one_setting_value (NMSetting *setting,
 		gsize length;
 		int i;
 
-		tmp = g_key_file_get_integer_list (file, setting_name, key, &length, NULL);
+		tmp = g_key_file_get_integer_list (info->keyfile, setting_name, key, &length, NULL);
 
 		array = g_byte_array_sized_new (length);
 		for (i = 0; i < length; i++) {
@@ -999,7 +1119,7 @@ read_one_setting_value (NMSetting *setting,
 		int i;
 		GSList *list = NULL;
 
-		sa = g_key_file_get_string_list (file, setting_name, key, &length, NULL);
+		sa = g_key_file_get_string_list (info->keyfile, setting_name, key, &length, NULL);
 		for (i = 0; i < length; i++)
 			list = g_slist_prepend (list, sa[i]);
 
@@ -1009,9 +1129,9 @@ read_one_setting_value (NMSetting *setting,
 		g_slist_free (list);
 		g_strfreev (sa);
 	} else if (type == DBUS_TYPE_G_MAP_OF_STRING) {
-		read_hash_of_string (file, setting, key);
+		read_hash_of_string (info->keyfile, setting, key);
 	} else if (type == DBUS_TYPE_G_UINT_ARRAY) {
-		if (!read_array_of_uint (file, setting, key)) {
+		if (!read_array_of_uint (info->keyfile, setting, key)) {
 			g_warning ("Unhandled setting property type (read): '%s/%s' : '%s'",
 					 setting_name, key, G_VALUE_TYPE_NAME (value));
 		}
@@ -1022,15 +1142,16 @@ read_one_setting_value (NMSetting *setting,
 }
 
 static NMSetting *
-read_setting (GKeyFile *file, const char *name)
+read_setting (GKeyFile *file, const char *keyfile_path, const char *setting_name)
 {
 	NMSetting *setting;
+	ReadInfo info = { file, keyfile_path };
 
-	setting = nm_connection_create_setting (name);
+	setting = nm_connection_create_setting (setting_name);
 	if (setting)
-		nm_setting_enumerate_values (setting, read_one_setting_value, (gpointer) file);
+		nm_setting_enumerate_values (setting, read_one_setting_value, &info);
 	else
-		g_warning ("Invalid setting name '%s'", name);
+		g_warning ("Invalid setting name '%s'", setting_name);
 
 	return setting;
 }
@@ -1061,13 +1182,12 @@ connection_from_file (const char *filename, GError **error)
 	gboolean bad_owner, bad_permissions;
 	NMConnection *connection = NULL;
 	NMSettingConnection *s_con;
-	NMSettingBluetooth *s_bt;
 	NMSetting *setting;
 	gchar **groups;
 	gsize length;
 	int i;
 	gboolean vpn_secrets = FALSE;
-	const char *ctype, *tmp;
+	const char *ctype;
 	GError *verify_error = NULL;
 
 	if (stat (filename, &statbuf) != 0 || !S_ISREG (statbuf.st_mode)) {
@@ -1100,7 +1220,7 @@ connection_from_file (const char *filename, GError **error)
 			continue;
 		}
 
-		setting = read_setting (key_file, groups[i]);
+		setting = read_setting (key_file, filename, groups[i]);
 		if (setting)
 			nm_connection_add_setting (connection, setting);
 	}
@@ -1114,36 +1234,9 @@ connection_from_file (const char *filename, GError **error)
 		ctype = nm_setting_connection_get_connection_type (s_con);
 		setting = nm_connection_get_setting_by_name (connection, ctype);
 		if (ctype) {
-			gboolean add_serial = FALSE;
-			NMSetting *new_setting = NULL;
-
 			if (!setting && !strcmp (ctype, NM_SETTING_WIRED_SETTING_NAME))
-				new_setting = nm_setting_wired_new ();
-			else if (!strcmp (ctype, NM_SETTING_BLUETOOTH_SETTING_NAME)) {
-				s_bt = (NMSettingBluetooth *) nm_connection_get_setting (connection, NM_TYPE_SETTING_BLUETOOTH);
-				if (s_bt) {
-					tmp = nm_setting_bluetooth_get_connection_type (s_bt);
-					if (tmp && !strcmp (tmp, NM_SETTING_BLUETOOTH_TYPE_DUN))
-						add_serial = TRUE;
-				}
-			} else if (!strcmp (ctype, NM_SETTING_GSM_SETTING_NAME))
-				add_serial = TRUE;
-			else if (!strcmp (ctype, NM_SETTING_CDMA_SETTING_NAME))
-				add_serial = TRUE;
-
-			/* Bluetooth DUN, GSM, and CDMA connections require a serial setting */
-			if (add_serial && !nm_connection_get_setting (connection, NM_TYPE_SETTING_SERIAL))
-				new_setting = nm_setting_serial_new ();
-
-			if (new_setting)
-				nm_connection_add_setting (connection, new_setting);
+				nm_connection_add_setting (connection, nm_setting_wired_new ());
 		}
-	}
-
-	/* Serial connections require a PPP setting too */
-	if (nm_connection_get_setting (connection, NM_TYPE_SETTING_SERIAL)) {
-		if (!nm_connection_get_setting (connection, NM_TYPE_SETTING_PPP))
-			nm_connection_add_setting (connection, nm_setting_ppp_new ());
 	}
 
 	/* Handle vpn secrets after the 'vpn' setting was read */

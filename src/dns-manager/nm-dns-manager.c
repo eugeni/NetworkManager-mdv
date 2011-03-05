@@ -16,7 +16,7 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  * Copyright (C) 2004 - 2005 Colin Walters <walters@redhat.com>
- * Copyright (C) 2004 - 2010 Red Hat, Inc.
+ * Copyright (C) 2004 - 2011 Red Hat, Inc.
  * Copyright (C) 2005 - 2008 Novell, Inc.
  *   and others
  */
@@ -583,6 +583,7 @@ update_dns (NMDnsManager *self,
 	rc.nameservers = g_ptr_array_new ();
 	rc.domain = NULL;
 	rc.searches = g_ptr_array_new ();
+	rc.nis_domain = NULL;
 	rc.nis_servers = g_ptr_array_new ();
 
 	if (priv->ip4_vpn_config)
@@ -860,7 +861,7 @@ nm_dns_manager_remove_ip4_config (NMDnsManager *mgr,
 
 	g_object_unref (config);
 
-	if (config_changed (mgr))
+	if (!config_changed (mgr))
 		return TRUE;
 
 	if (!update_dns (mgr, iface, FALSE, &error)) {
@@ -905,7 +906,7 @@ nm_dns_manager_add_ip6_config (NMDnsManager *mgr,
 	if (!g_slist_find (priv->configs, config))
 		priv->configs = g_slist_append (priv->configs, g_object_ref (config));
 
-	if (config_changed (mgr))
+	if (!config_changed (mgr))
 		return TRUE;
 
 	if (!update_dns (mgr, iface, FALSE, &error)) {
@@ -945,7 +946,7 @@ nm_dns_manager_remove_ip6_config (NMDnsManager *mgr,
 
 	g_object_unref (config);	
 
-	if (config_changed (mgr))
+	if (!config_changed (mgr))
 		return TRUE;
 
 	if (!update_dns (mgr, iface, FALSE, &error)) {

@@ -16,7 +16,7 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  * Copyright (C) 2007 - 2009 Novell, Inc.
- * Copyright (C) 2007 - 2010 Red Hat, Inc.
+ * Copyright (C) 2007 - 2011 Red Hat, Inc.
  */
 
 #include <config.h>
@@ -464,18 +464,19 @@ nm_manager_update_state (NMManager *manager)
 }
 
 static void
-ignore_cb (NMSettingsConnectionInterface *connection, GError *error, gpointer user_data)
-{
-}
-
-static void
 update_active_connection_timestamp (NMManager *manager, NMDevice *device)
 {
 	NMActRequest *req;
 	NMConnection *connection;
 	NMSettingConnection *s_con;
-	NMSettingsConnectionInterface *connection_interface;
 	NMManagerPrivate *priv;
+	const char *connection_uuid;
+	guint64 timestamp;
+	guint64 *ts_ptr;
+	GKeyFile *timestamps_file;
+	char *data;
+	gsize len;
+	GError *error = NULL;
 
 	g_return_if_fail (NM_IS_DEVICE (device));
 
@@ -490,16 +491,36 @@ update_active_connection_timestamp (NMManager *manager, NMDevice *device)
 	if (nm_connection_get_scope (connection) != NM_CONNECTION_SCOPE_SYSTEM)
 		return;
 
+	/* Update timestamp in connection's object data */
+	timestamp = (guint64) time (NULL);
+	ts_ptr = g_new (guint64, 1);
+	*ts_ptr = timestamp;
+	g_object_set_data_full (G_OBJECT (connection), NM_SYSCONFIG_SETTINGS_TIMESTAMP_TAG, ts_ptr, g_free);
+
 	s_con = NM_SETTING_CONNECTION (nm_connection_get_setting (NM_CONNECTION (connection), NM_TYPE_SETTING_CONNECTION));
 	g_assert (s_con);
-	g_object_set (s_con, NM_SETTING_CONNECTION_TIMESTAMP, (guint64) time (NULL), NULL);
+	connection_uuid = nm_setting_connection_get_uuid (s_con);
 
-	if (nm_setting_connection_get_read_only (s_con))
-		return;
+	/* Save timestamp to timestamps database file */
+	timestamps_file = g_key_file_new ();
+	if (!g_key_file_load_from_file (timestamps_file, NM_SYSCONFIG_SETTINGS_TIMESTAMPS_FILE, G_KEY_FILE_KEEP_COMMENTS, &error)) {
+		if (!(error->domain == G_FILE_ERROR && error->code == G_FILE_ERROR_NOENT))
+			nm_log_warn (LOGD_SYS_SET, "error parsing timestamps file '%s': %s", NM_SYSCONFIG_SETTINGS_TIMESTAMPS_FILE, error->message);
+		g_clear_error (&error);
+	}
 
-	connection_interface = nm_settings_interface_get_connection_by_path (NM_SETTINGS_INTERFACE (priv->sys_settings),
-	                                                                     nm_connection_get_path (connection));
-	nm_settings_connection_interface_update (connection_interface, ignore_cb, NULL);
+	g_key_file_set_uint64 (timestamps_file, "timestamps", connection_uuid, timestamp);
+
+	data = g_key_file_to_data (timestamps_file, &len, &error);
+	if (data) {
+		g_file_set_contents (NM_SYSCONFIG_SETTINGS_TIMESTAMPS_FILE, data, len, &error);
+		g_free (data);
+	}
+	if (error) {
+		nm_log_warn (LOGD_SYS_SET, "error saving timestamp: %s", error->message);
+		g_error_free (error);
+	}
+	g_key_file_free (timestamps_file);
 }
 
 static void
@@ -1355,6 +1376,12 @@ user_proxy_init (NMManager *self)
 
 	g_return_if_fail (self != NULL);
 	g_return_if_fail (priv->user_proxy == NULL);
+
+	/* Don't try to initialize the user settings proxy if the user
+	 * settings service doesn't actually exist.
+	 */
+	if (!nm_dbus_manager_name_has_owner (priv->dbus_mgr, NM_DBUS_SERVICE_USER_SETTINGS))
+		return;
 
 	bus = nm_dbus_manager_get_connection (priv->dbus_mgr);
 	priv->user_proxy = dbus_g_proxy_new_for_name_owner (bus,
@@ -2426,6 +2453,14 @@ udev_device_removed_cb (NMUdevManager *manager,
 
 	ifindex = g_udev_device_get_property_as_int (udev_device, "IFINDEX");
 	device = find_device_by_ifindex (self, ifindex);
+	if (!device) {
+		/* On removal we won't always be able to read properties anymore, as
+		 * they may have already been removed from sysfs.  Instead, we just
+		 * have to fall back to the device's interface name.
+		 */
+		device = find_device_by_iface (self, g_udev_device_get_name (udev_device));
+	}
+
 	if (device)
 		priv->devices = remove_one_device (self, priv->devices, device, FALSE);
 }
@@ -3845,6 +3880,23 @@ nm_manager_auto_user_connections_allowed (NMManager *self)
 	       && priv->user_con_perm == NM_AUTH_CALL_RESULT_YES;
 }
 
+static guint64
+get_connection_timestamp (NMConnection *connection)
+{
+	if (nm_connection_get_scope (connection) == NM_CONNECTION_SCOPE_SYSTEM) {
+		guint64 *ts_p;
+
+		ts_p = (guint64 *) g_object_get_data (G_OBJECT (connection), NM_SYSCONFIG_SETTINGS_TIMESTAMP_TAG);
+		return ts_p != NULL ? *ts_p : 0;
+	} else {
+		NMSettingConnection *s_con;
+
+		s_con = (NMSettingConnection *) nm_connection_get_setting (connection, NM_TYPE_SETTING_CONNECTION);
+		g_assert (s_con);
+		return nm_setting_connection_get_timestamp (s_con);
+	}
+}
+
 static int
 connection_sort (gconstpointer pa, gconstpointer pb)
 {
@@ -3852,6 +3904,7 @@ connection_sort (gconstpointer pa, gconstpointer pb)
 	NMSettingConnection *con_a;
 	NMConnection *b = NM_CONNECTION (pb);
 	NMSettingConnection *con_b;
+	guint64 ts_a, ts_b;
 
 	con_a = (NMSettingConnection *) nm_connection_get_setting (a, NM_TYPE_SETTING_CONNECTION);
 	g_assert (con_a);
@@ -3864,10 +3917,13 @@ connection_sort (gconstpointer pa, gconstpointer pb)
 		return 1;
 	}
 
-	if (nm_setting_connection_get_timestamp (con_a) > nm_setting_connection_get_timestamp (con_b))
+	ts_a = get_connection_timestamp (a);
+	ts_b = get_connection_timestamp (b);
+	if (ts_a > ts_b)
 		return -1;
-	else if (nm_setting_connection_get_timestamp (con_a) == nm_setting_connection_get_timestamp (con_b))
+	else if (ts_a == ts_b)
 		return 0;
+
 	return 1;
 }
 
@@ -3967,8 +4023,7 @@ nm_manager_start (NMManager *self)
 	 * they will be queried when the user settings service shows up on the
 	 * bus in nm_manager_name_owner_changed().
 	 */
-	if (nm_dbus_manager_name_has_owner (priv->dbus_mgr, NM_DBUS_SERVICE_USER_SETTINGS))
-		user_proxy_init (self);
+	user_proxy_init (self);
 
 	nm_udev_manager_query_devices (priv->udev_mgr);
 	bluez_manager_resync_devices (self);
@@ -4351,10 +4406,11 @@ dispose (GObject *object)
 
 	/* Unregister property filter */
 	bus = nm_dbus_manager_get_connection (priv->dbus_mgr);
-	g_assert (bus);
-	dbus_connection = dbus_g_connection_get_connection (bus);
-	g_assert (dbus_connection);
-	dbus_connection_remove_filter (dbus_connection, prop_filter, manager);
+	if (bus) {
+		dbus_connection = dbus_g_connection_get_connection (bus);
+		g_assert (dbus_connection);
+		dbus_connection_remove_filter (dbus_connection, prop_filter, manager);
+	}
 	g_object_unref (priv->dbus_mgr);
 
 	if (priv->bluez_mgr)

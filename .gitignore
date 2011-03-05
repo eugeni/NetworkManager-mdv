@@ -30,6 +30,8 @@ man/*.[185]
 po/*.gmo
 po/.intltool-merge-cache
 
+include/nm-version.h
+
 docs/libnm-glib/*.stamp
 docs/libnm-glib/html/
 docs/libnm-glib/tmpl/
@@ -93,6 +95,7 @@ libnm-util/tests/test-need-secrets
 libnm-util/tests/test-setting-8021x
 src/tests/test-dhcp-options
 src/tests/test-policy-hosts
+src/dhcp-manager/tests/test-dhcp-dhclient
 
 system-settings/plugins/keyfile/tests/test-keyfile
 system-settings/plugins/ifcfg-rh/tests/test-ifcfg-rh

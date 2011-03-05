@@ -23,6 +23,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <netinet/ether.h>
 #include <string.h>
 
 #include <gmodule.h>
@@ -39,6 +40,7 @@
 #include "nm-keyfile-connection.h"
 #include "writer.h"
 #include "common.h"
+#include "utils.h"
 
 #define CONF_FILE SYSCONFDIR "/NetworkManager/NetworkManager.conf"
 #define OLD_CONF_FILE SYSCONFDIR "/NetworkManager/nm-system-settings.conf"
@@ -88,6 +90,9 @@ read_connections (NMSystemConfigInterface *config)
 	while ((item = g_dir_read_name (dir))) {
 		NMKeyfileConnection *connection;
 		char *full_path;
+
+		if (utils_should_ignore_file (item))
+			continue;
 
 		full_path = g_build_filename (KEYFILE_DIR, item, NULL);
 		PLUGIN_PRINT (KEYFILE_PLUGIN_NAME, "parsing %s ... ", item);
@@ -192,6 +197,11 @@ dir_changed (GFileMonitor *monitor,
 	GError *error = NULL;
 
 	name = g_file_get_path (file);
+	if (utils_should_ignore_file (name)) {
+		g_free (name);
+		return;
+	}
+
 	connection = g_hash_table_lookup (priv->hash, name);
 
 	switch (event_type) {
@@ -203,15 +213,18 @@ dir_changed (GFileMonitor *monitor,
 		break;
 	case G_FILE_MONITOR_EVENT_CREATED:
 	case G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT:
-		PLUGIN_PRINT (KEYFILE_PLUGIN_NAME, "updating %s", name);
-
 		if (connection) {
 			/* Update */
 			NMKeyfileConnection *tmp;
 
 			tmp = nm_keyfile_connection_new (name, &error);
 			if (tmp) {
-				update_connection_settings (connection, tmp);
+				if (!nm_connection_compare (NM_CONNECTION (connection),
+				                            NM_CONNECTION (tmp),
+				                            NM_SETTING_COMPARE_FLAG_EXACT)) {
+					PLUGIN_PRINT (KEYFILE_PLUGIN_NAME, "updating %s", name);
+					update_connection_settings (connection, tmp);
+				}
 				g_object_unref (tmp);
 			} else {
 				/* Error; remove the connection */
@@ -221,6 +234,8 @@ dir_changed (GFileMonitor *monitor,
 				remove_connection (SC_PLUGIN_KEYFILE (config), connection, name);
 			}
 		} else {
+			PLUGIN_PRINT (KEYFILE_PLUGIN_NAME, "updating %s", name);
+
 			/* New */
 			connection = nm_keyfile_connection_new (name, &error);
 			if (connection) {
@@ -404,8 +419,23 @@ get_unmanaged_specs (NMSystemConfigInterface *config)
 			udis = g_strsplit (str, ";", -1);
 			g_free (str);
 
-			for (i = 0; udis[i] != NULL; i++)
-				specs = g_slist_append (specs, udis[i]);
+			for (i = 0; udis[i] != NULL; i++) {
+				/* Verify unmanaged specification and add it to the list */
+				if (strlen (udis[i]) > 4 && !strncmp (udis[i], "mac:", 4) && ether_aton (udis[i] + 4)) {
+					char *p = udis[i];
+
+					/* To accept uppercase MACs in configuration file, we have to convert values to lowercase here.
+					 * Unmanaged MACs in specs are always in lowercase. */
+					while (*p) {
+				                *p = g_ascii_tolower (*p);
+				                p++;
+				        }
+					specs = g_slist_append (specs, udis[i]);
+				} else {
+					g_warning ("Error in file '%s': invalid unmanaged-devices entry: '%s'", priv->conf_file, udis[i]);
+					g_free (udis[i]);
+				}
+			}
 
 			g_free (udis); /* Yes, g_free, not g_strfreev because we need the strings in the list */
 		}

@@ -15,7 +15,7 @@
  * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
- * Copyright (C) 2009 - 2010 Red Hat, Inc.
+ * Copyright (C) 2009 - 2011 Red Hat, Inc.
  */
 
 #include <ctype.h>
@@ -143,6 +143,7 @@ write_secret_file (const char *path,
 	success = TRUE;
 
 out:
+	g_free (tmppath);
 	return success;
 }
 
@@ -884,6 +885,7 @@ write_wired_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	svSetValue (ifcfg, "SUBCHANNELS", NULL, FALSE);
 	s390_subchannels = nm_setting_wired_get_s390_subchannels (s_wired);
 	if (s390_subchannels) {
+		tmp = NULL;
 	    if (s390_subchannels->len == 2) {
 			tmp = g_strdup_printf ("%s,%s",
 				                   (const char *) g_ptr_array_index (s390_subchannels, 0),
@@ -936,20 +938,11 @@ write_wired_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 static void
 write_connection_setting (NMSettingConnection *s_con, shvarFile *ifcfg)
 {
-	char *tmp;
-
 	svSetValue (ifcfg, "NAME", nm_setting_connection_get_id (s_con), FALSE);
 	svSetValue (ifcfg, "UUID", nm_setting_connection_get_uuid (s_con), FALSE);
 	svSetValue (ifcfg, "ONBOOT",
 	            nm_setting_connection_get_autoconnect (s_con) ? "yes" : "no",
 	            FALSE);
-
-	svSetValue (ifcfg, "LAST_CONNECT", NULL, FALSE);
-	if (nm_setting_connection_get_timestamp (s_con)) {
-		tmp = g_strdup_printf ("%" G_GUINT64_FORMAT, nm_setting_connection_get_timestamp (s_con));
-		svSetValue (ifcfg, "LAST_CONNECT", tmp, FALSE);
-		g_free (tmp);
-	}
 }
 
 static gboolean
@@ -1407,6 +1400,13 @@ write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 			g_string_append_c (ip_ptr, '/');
 			g_string_append (ip_ptr, prefix);
 			g_free (prefix);
+
+			/* We only support gateway for the first IP address for now */
+			if (i == 0) {
+				ip = nm_ip6_address_get_gateway (addr);
+				inet_ntop (AF_INET6, (const void *) ip, buf, sizeof (buf));
+				svSetValue (ifcfg, "IPV6_DEFAULTGW", buf, FALSE);
+			}
 		}
 
 		svSetValue (ifcfg, "IPV6ADDR", ip_str1->str, FALSE);
@@ -1416,6 +1416,7 @@ write_ip6_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
 	} else {
 		svSetValue (ifcfg, "IPV6ADDR", NULL, FALSE);
 		svSetValue (ifcfg, "IPV6ADDR_SECONDARIES", NULL, FALSE);
+		svSetValue (ifcfg, "IPV6_DEFAULTGW", NULL, FALSE);
 	}
 
 	/* Write out DNS - 'DNS' key is used both for IPv4 and IPv6 */

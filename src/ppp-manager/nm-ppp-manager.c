@@ -165,7 +165,8 @@ dispose (GObject *object)
 
 	nm_ppp_manager_stop (NM_PPP_MANAGER (object));
 
-	g_object_unref (priv->act_req);
+	if (priv->act_req)
+		g_object_unref (priv->act_req);
 	g_object_unref (priv->dbus_manager);
 
 	G_OBJECT_CLASS (nm_ppp_manager_parent_class)->dispose (object);
@@ -724,6 +725,8 @@ create_pppd_cmd_line (NMPPPManager *self,
 	NMCmdLine *cmd;
 	const char *ppp_debug;
 
+	g_return_val_if_fail (setting != NULL, NULL);
+
 	ppp_binary = nm_find_pppd ();
 	if (!ppp_binary) {
 		g_set_error (err, NM_PPP_MANAGER_ERROR, NM_PPP_MANAGER_ERROR,
@@ -896,6 +899,15 @@ nm_ppp_manager_start (NMPPPManager *manager,
 	g_return_val_if_fail (NM_IS_ACT_REQUEST (req), FALSE);
 
 	priv = NM_PPP_MANAGER_GET_PRIVATE (manager);
+
+#if !WITH_PPP
+	/* PPP support disabled */
+	g_set_error_literal (err,
+	                     NM_PPP_MANAGER_ERROR,
+	                     NM_PPP_MANAGER_ERROR_UNKOWN,
+	                     "PPP support is not enabled.");
+	return FALSE;
+#endif
 
 	priv->pid = 0;
 

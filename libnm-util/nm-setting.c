@@ -317,6 +317,29 @@ nm_setting_verify (NMSetting *setting, GSList *all_settings, GError **error)
 	return TRUE;
 }
 
+static inline gboolean
+should_compare_prop (NMSetting *setting,
+                     const char *prop_name,
+                     NMSettingCompareFlags comp_flags,
+                     GParamFlags prop_flags)
+{
+	/* Fuzzy compare ignores secrets and properties defined with the FUZZY_IGNORE flag */
+	if (   (comp_flags & NM_SETTING_COMPARE_FLAG_FUZZY)
+	    && (prop_flags & (NM_SETTING_PARAM_FUZZY_IGNORE | NM_SETTING_PARAM_SECRET)))
+		return FALSE;
+
+	if (   (comp_flags & NM_SETTING_COMPARE_FLAG_IGNORE_SECRETS)
+	    && (prop_flags & NM_SETTING_PARAM_SECRET))
+		return FALSE;
+
+	if (   (comp_flags & NM_SETTING_COMPARE_FLAG_IGNORE_ID)
+	    && NM_IS_SETTING_CONNECTION (setting)
+	    && !strcmp (prop_name, NM_SETTING_CONNECTION_ID))
+		return FALSE;
+
+	return TRUE;
+}
+
 /**
  * nm_setting_compare:
  * @a: a #NMSetting
@@ -355,19 +378,8 @@ nm_setting_compare (NMSetting *a,
 		GValue value1 = { 0 };
 		GValue value2 = { 0 };
 
-		/* Fuzzy compare ignores secrets and properties defined with the
-		 * FUZZY_IGNORE flag
-		 */
-		if (   (flags & NM_SETTING_COMPARE_FLAG_FUZZY)
-		    && (prop_spec->flags & (NM_SETTING_PARAM_FUZZY_IGNORE | NM_SETTING_PARAM_SECRET)))
-			continue;
-
-		if ((flags & NM_SETTING_COMPARE_FLAG_IGNORE_SECRETS) && (prop_spec->flags & NM_SETTING_PARAM_SECRET))
-			continue;
-
-		if (   (flags & NM_SETTING_COMPARE_FLAG_IGNORE_ID)
-			   && !strcmp (nm_setting_get_name (a), NM_SETTING_CONNECTION_SETTING_NAME)
-		    && !strcmp (prop_spec->name, NM_SETTING_CONNECTION_ID))
+		/* Handle compare flags */
+		if (!should_compare_prop (a, prop_spec->name, flags, prop_spec->flags))
 			continue;
 
 		g_value_init (&value1, prop_spec->value_type);
@@ -385,6 +397,118 @@ nm_setting_compare (NMSetting *a,
 	g_free (property_specs);
 
 	return different == 0 ? TRUE : FALSE;
+}
+
+/**
+ * nm_setting_diff:
+ * @a: a #NMSetting
+ * @b: a second #NMSetting to compare with the first
+ * @flags: compare flags, e.g. %NM_SETTING_COMPARE_FLAG_EXACT
+ * @invert_results: this parameter is used internally by libnm-util and should
+ * be set to %FALSE.  If %TRUE inverts the meaning of the #NMSettingDiffResult.
+ * @results: (element-type utf8 guint32): if the settings differ, on return a
+ * hash table mapping the differing keys to one or more #NMSettingDiffResult
+ * values OR-ed together.  If the settings do not differ, any hash table passed
+ * in is unmodified.  If no hash table is passed in, a new one is created.
+ *
+ * Compares two #NMSetting objects for similarity, with comparison behavior
+ * modified by a set of flags.  See the documentation for #NMSettingCompareFlags
+ * for a description of each flag's behavior.  If the settings differ, the keys
+ * of each setting that differ from the other are added to @results, mapped to
+ * one or more #NMSettingDiffResult values.
+ *
+ * Returns: %TRUE if the settings contain the same values, %FALSE if they do not
+ **/
+gboolean
+nm_setting_diff (NMSetting *a,
+                 NMSetting *b,
+                 NMSettingCompareFlags flags,
+                 gboolean invert_results,
+                 GHashTable **results)
+{
+	GParamSpec **property_specs;
+	guint n_property_specs;
+	guint i;
+	NMSettingDiffResult a_result = NM_SETTING_DIFF_RESULT_IN_A;
+	NMSettingDiffResult b_result = NM_SETTING_DIFF_RESULT_IN_B;
+	gboolean results_created = FALSE;
+
+	g_return_val_if_fail (results != NULL, FALSE);
+	g_return_val_if_fail (a != NULL, FALSE);
+	g_return_val_if_fail (NM_IS_SETTING (a), FALSE);
+	if (b) {
+		g_return_val_if_fail (NM_IS_SETTING (b), FALSE);
+		g_return_val_if_fail (G_OBJECT_TYPE (a) == G_OBJECT_TYPE (b), FALSE);
+	}
+
+	/* If the caller is calling this function in a pattern like this to get
+	 * complete diffs:
+	 *
+	 * nm_setting_diff (A, B, FALSE, &results);
+	 * nm_setting_diff (B, A, TRUE, &results);
+	 *
+	 * and wants us to invert the results so that the second invocation comes
+	 * out correctly, do that here.
+	 */
+	if (invert_results) {
+		a_result = NM_SETTING_DIFF_RESULT_IN_B;
+		b_result = NM_SETTING_DIFF_RESULT_IN_A;
+	}
+
+	if (*results == NULL) {
+		*results = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+		results_created = TRUE;
+	}
+
+	/* And now all properties */
+	property_specs = g_object_class_list_properties (G_OBJECT_GET_CLASS (a), &n_property_specs);
+
+	for (i = 0; i < n_property_specs; i++) {
+		GParamSpec *prop_spec = property_specs[i];
+		GValue a_value = { 0 }, b_value = { 0 };
+		NMSettingDiffResult r = NM_SETTING_DIFF_RESULT_UNKNOWN, tmp;
+		gboolean different = TRUE;
+
+		/* Handle compare flags */
+		if (!should_compare_prop (a, prop_spec->name, flags, prop_spec->flags))
+			continue;
+		if (strcmp (prop_spec->name, NM_SETTING_NAME) == 0)
+			continue;
+
+		if (b) {
+			g_value_init (&a_value, prop_spec->value_type);
+			g_object_get_property (G_OBJECT (a), prop_spec->name, &a_value);
+
+			g_value_init (&b_value, prop_spec->value_type);
+			g_object_get_property (G_OBJECT (b), prop_spec->name, &b_value);
+
+			different = !!g_param_values_cmp (prop_spec, &a_value, &b_value);
+			if (different) {
+				if (!g_param_value_defaults (prop_spec, &a_value))
+					r |= a_result;
+				if (!g_param_value_defaults (prop_spec, &b_value))
+					r |= b_result;
+			}
+
+			g_value_unset (&a_value);
+			g_value_unset (&b_value);
+		} else
+			r = a_result;  /* only in A */
+
+		if (different) {
+			tmp = GPOINTER_TO_UINT (g_hash_table_lookup (*results, prop_spec->name));
+			g_hash_table_insert (*results, g_strdup (prop_spec->name), GUINT_TO_POINTER (tmp | r));
+		}
+	}
+	g_free (property_specs);
+
+	/* Don't return an empty hash table */
+	if (results_created && !g_hash_table_size (*results)) {
+		g_hash_table_destroy (*results);
+		*results = NULL;
+	}
+
+	return !(*results);
 }
 
 /**
@@ -483,11 +607,6 @@ nm_setting_need_secrets (NMSetting *setting)
 	return secrets;
 }
 
-typedef struct {
-	NMSetting *setting;
-	GError **error;
-} UpdateSecretsInfo;
-
 static gboolean
 update_one_secret (NMSetting *setting, const char *key, GValue *value, GError **error)
 {
@@ -504,13 +623,9 @@ update_one_secret (NMSetting *setting, const char *key, GValue *value, GError **
 		return FALSE;
 	}
 
-	if (!(prop_spec->flags & NM_SETTING_PARAM_SECRET)) {
-		g_set_error (error,
-		             NM_SETTING_ERROR,
-		             NM_SETTING_ERROR_PROPERTY_NOT_SECRET,
-		             "%s", key);
-		return FALSE;
-	}
+	/* Silently ignore non-secrets */
+	if (!(prop_spec->flags & NM_SETTING_PARAM_SECRET))
+		return TRUE;
 
 	if (g_value_type_compatible (G_VALUE_TYPE (value), G_PARAM_SPEC_VALUE_TYPE (prop_spec))) {
 		g_object_set_property (G_OBJECT (setting), prop_spec->name, value);
@@ -526,17 +641,6 @@ update_one_secret (NMSetting *setting, const char *key, GValue *value, GError **
 		             "%s", key);
 	}
 	return success;
-}
-
-static void
-update_one_cb (gpointer key, gpointer val, gpointer user_data)
-{
-	UpdateSecretsInfo *info = user_data;
-	const char *secret_key = (const char *) key;
-	GValue *secret_value = (GValue *) val;
-
-	if (*(info->error) == NULL)
-		NM_SETTING_GET_CLASS (info->setting)->update_one_secret (info->setting, secret_key, secret_value, info->error);
 }
 
 /**
@@ -555,8 +659,9 @@ update_one_cb (gpointer key, gpointer val, gpointer user_data)
 gboolean
 nm_setting_update_secrets (NMSetting *setting, GHashTable *secrets, GError **error)
 {
-	UpdateSecretsInfo *info;
-	gboolean success;
+	GHashTableIter iter;
+	gpointer key, data;
+	GError *tmp_error = NULL;
 
 	g_return_val_if_fail (setting != NULL, FALSE);
 	g_return_val_if_fail (NM_IS_SETTING (setting), FALSE);
@@ -564,14 +669,19 @@ nm_setting_update_secrets (NMSetting *setting, GHashTable *secrets, GError **err
 	if (error)
 		g_return_val_if_fail (*error == NULL, FALSE);
 
-	info = g_malloc0 (sizeof (UpdateSecretsInfo));
-	info->setting = setting;
-	info->error = error;
-	g_hash_table_foreach (secrets, update_one_cb, info);
-	success = *(info->error) ? FALSE : TRUE;
-	g_free (info);
+	g_hash_table_iter_init (&iter, secrets);
+	while (g_hash_table_iter_next (&iter, &key, &data)) {
+		const char *secret_key = (const char *) key;
+		GValue *secret_value = (GValue *) data;
 
-	return success;
+		NM_SETTING_GET_CLASS (setting)->update_one_secret (setting, secret_key, secret_value, &tmp_error);
+		if (tmp_error) {
+			g_propagate_error (error, tmp_error);
+			return FALSE;
+		}
+	}
+
+	return TRUE;
 }
 
 /**
@@ -619,6 +729,8 @@ nm_setting_to_string (NMSetting *setting)
 
 		is_serializable = prop_spec->flags & NM_SETTING_PARAM_SERIALIZE;
 		is_default = g_param_value_defaults (prop_spec, &value);
+
+		g_value_unset (&value);
 
 		if (is_serializable || is_default) {
 			g_string_append (string, " (");

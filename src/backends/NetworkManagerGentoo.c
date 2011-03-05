@@ -30,11 +30,21 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <gio/gio.h>
 
 #include "NetworkManagerGeneric.h"
 #include "nm-system.h"
 #include "NetworkManagerUtils.h"
 #include "nm-logging.h"
+
+#define BUFFER_SIZE 512
+
+static void openrc_start_lo_if_necessary() 
+{
+	/* No need to run net.lo if it is already running */
+        if (nm_spawn_process ("/etc/init.d/net.lo status") != 0)
+                nm_spawn_process ("/etc/init.d/net.lo start");
+}
 
 /*
  * nm_system_enable_loopback
@@ -44,9 +54,27 @@
  */
 void nm_system_enable_loopback (void)
 {
-  /* No need to run net.lo if it is already running */
-	if (nm_spawn_process ("/etc/init.d/net.lo status") != 0)
-		nm_spawn_process("/etc/init.d/net.lo start");
+	gchar *comm;
+
+	/* If anything goes wrong trying to open /proc/1/comm, we will assume
+	   OpenRC. */
+	if (!g_file_get_contents ("/proc/1/comm", &comm, NULL, NULL)) {
+		nm_log_info (LOGD_CORE, "NetworkManager is running with OpenRC...");
+		openrc_start_lo_if_necessary ();
+		return;
+	}
+
+	if (g_strstr_len (comm, -1, "systemd")) {
+		/* We use the generic loopback enabler if using systemd. */
+		nm_log_info (LOGD_CORE, "NetworkManager is running with systemd...");
+		nm_generic_enable_loopback ();
+	} else {
+		/* OpenRC otherwise. */
+		nm_log_info (LOGD_CORE, "NetworkManager is running with OpenRC...");
+		openrc_start_lo_if_necessary();
+	}
+
+	g_free (comm);
 }
 
 /*

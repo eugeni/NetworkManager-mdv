@@ -15,7 +15,7 @@
  * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
- * Copyright (C) 2008 - 2010 Red Hat, Inc.
+ * Copyright (C) 2008 - 2011 Red Hat, Inc.
  */
 
 #include <config.h>
@@ -114,7 +114,7 @@ make_connection_setting (const char *file,
 {
 	NMSettingConnection *s_con;
 	const char *ifcfg_name = NULL;
-	char *new_id = NULL, *uuid = NULL, *value;
+	char *new_id = NULL, *uuid = NULL;
 	char *ifcfg_id;
 
 	ifcfg_name = utils_get_ifcfg_name (file, TRUE);
@@ -166,21 +166,6 @@ make_connection_setting (const char *file,
 	g_object_set (s_con, NM_SETTING_CONNECTION_AUTOCONNECT,
 	              svTrueValue (ifcfg, "ONBOOT", TRUE),
 	              NULL);
-
-	value = svGetValue (ifcfg, "LAST_CONNECT", FALSE);
-	if (value) {
-		unsigned long int tmp;
-		guint64 timestamp;
-
-		errno = 0;
-		tmp = strtoul (value, NULL, 10);
-		if (errno == 0) {
-			timestamp = (guint64) tmp;
-			g_object_set (s_con, NM_SETTING_CONNECTION_TIMESTAMP, timestamp, NULL);
-		} else
-			PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: invalid LAST_CONNECT time");
-		g_free (value);
-	}
 
 	return NM_SETTING (s_con);
 }
@@ -683,12 +668,7 @@ read_one_ip4_route (shvarFile *ifcfg,
 	/* Next hop */
 	if (!read_ip4_address (ifcfg, gw_tag, &tmp, error))
 		goto out;
-	if (!tmp) {
-		g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
-		             "Missing or invalid IP4 gateway address '%d'",
-		             tmp);
-		goto out;
-	}
+	/* No need to check tmp, because we don't make distinction between missing GATEWAY IP and 0.0.0.0 */
 	nm_ip4_route_set_next_hop (route, tmp);
 
 	/* Prefix */
@@ -891,11 +871,17 @@ error:
 }
 
 static NMIP6Address *
-parse_full_ip6_address (const char *addr_str, GError **error)
+parse_full_ip6_address (shvarFile *ifcfg,
+                        const char *network_file,
+                        const char *addr_str,
+                        int i,
+                        GError **error)
 {
-	NMIP6Address *addr;
+	NMIP6Address *addr = NULL;
 	char **list;
-	char *ip_tag, *prefix_tag;
+	char *ip_val, *prefix_val;
+	shvarFile *network_ifcfg;
+	char *value = NULL;
 	struct in6_addr tmp = IN6ADDR_ANY_INIT;
 	gboolean success = FALSE;
 
@@ -911,33 +897,58 @@ parse_full_ip6_address (const char *addr_str, GError **error)
 		goto error;
 	}
 
-	ip_tag = list[0];
-	prefix_tag = list[1];
+	ip_val = list[0];
+	prefix_val = list[1];
 
 	addr = nm_ip6_address_new ();
 	/* IP address */
-	if (ip_tag) {
-		if (!parse_ip6_address (ip_tag, &tmp, error))
+	if (ip_val) {
+		if (!parse_ip6_address (ip_val, &tmp, error))
 			goto error;
 	}
-
 	nm_ip6_address_set_address (addr, &tmp);
 
 	/* Prefix */
-	if (prefix_tag) {
+	if (prefix_val) {
 		long int prefix;
 
 		errno = 0;
-		prefix = strtol (prefix_tag, NULL, 10);
+		prefix = strtol (prefix_val, NULL, 10);
 		if (errno || prefix <= 0 || prefix > 128) {
 			g_set_error (error, IFCFG_PLUGIN_ERROR, 0,
-			             "Invalid IP6 prefix '%s'", prefix_tag);
+			             "Invalid IP6 prefix '%s'", prefix_val);
 			goto error;
 		}
 		nm_ip6_address_set_prefix (addr, (guint32) prefix);
 	} else {
 		/* Missing prefix is treated as prefix of 64 */
 		nm_ip6_address_set_prefix (addr, 64);
+	}
+
+	/* Gateway */
+	tmp = in6addr_any;
+	value = svGetValue (ifcfg, "IPV6_DEFAULTGW", FALSE);
+	if (i != 0) {
+		/* We don't support gateways for IPV6ADDR_SECONDARIES yet */
+		g_free (value);
+		value = NULL;
+	}
+	if (!value) {
+		/* If no gateway in the ifcfg, try global /etc/sysconfig/network instead */
+		network_ifcfg = svNewFile (network_file);
+		if (network_ifcfg) {
+			value = svGetValue (network_ifcfg, "IPV6_DEFAULTGW", FALSE);
+			svCloseFile (network_ifcfg);
+		}
+	}
+	if (value) {
+		char *ptr;
+
+		if ((ptr = strchr (value, '%')) != NULL)
+			*ptr = '\0';  /* remove %interface prefix if present */
+		if (!parse_ip6_address (value, &tmp, error))
+			goto error;
+		nm_ip6_address_set_gateway (addr, &tmp);
 	}
 
 	success = TRUE;
@@ -949,6 +960,7 @@ error:
 	}
 
 	g_strfreev (list);
+	g_free (value);
 	return addr;
 }
 
@@ -1167,6 +1179,7 @@ make_ip4_setting (shvarFile *ifcfg,
 		if (!g_ascii_strcasecmp (value, "bootp") || !g_ascii_strcasecmp (value, "dhcp"))
 			method = NM_SETTING_IP4_CONFIG_METHOD_AUTO;
 		else if (!g_ascii_strcasecmp (value, "ibft")) {
+			g_object_set (s_ip4, NM_SETTING_IP4_CONFIG_NEVER_DEFAULT, never_default, NULL);
 			/* iSCSI Boot Firmware Table: need to read values from the iSCSI 
 			 * firmware for this device and create the IP4 setting using those.
 			 */
@@ -1511,8 +1524,8 @@ make_ip6_setting (shvarFile *ifcfg,
 
 		list = g_strsplit_set (val, " ", 0);
 		g_free (val);
-		for (iter = list; iter && *iter; iter++, i++) {
-			addr = parse_full_ip6_address (*iter, error);
+		for (iter = list, i = 0; iter && *iter; iter++, i++) {
+			addr = parse_full_ip6_address (ifcfg, network_file, *iter, i, error);
 			if (!addr) {
 				g_strfreev (list);
 				goto error;

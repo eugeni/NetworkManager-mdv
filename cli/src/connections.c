@@ -14,7 +14,7 @@
  * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
- * (C) Copyright 2010 Red Hat, Inc.
+ * (C) Copyright 2010 - 2011 Red Hat, Inc.
  */
 
 #include <glib.h>
@@ -634,12 +634,6 @@ do_connections_status (NmCli *nmc, int argc, char **argv)
 
 	nmc->should_wait = FALSE;
 
-	/* create NMClient */
-	if (!nmc->get_client (nmc))
-		return nmc->return_value;
-
-	active_cons = nm_client_get_active_connections (nmc->client);
-
 	if (!nmc->required_fields || strcasecmp (nmc->required_fields, "common") == 0)
 		fields_str = fields_common;
 	else if (!nmc->required_fields || strcasecmp (nmc->required_fields, "all") == 0)
@@ -660,10 +654,25 @@ do_connections_status (NmCli *nmc, int argc, char **argv)
 		goto error;
 	}
 
+	if (!nmc_is_nm_running (nmc, &error)) {
+		if (error) {
+			g_string_printf (nmc->return_text, _("Error: Can't find out if NetworkManager is running: %s."), error->message);
+			nmc->return_value = NMC_RESULT_ERROR_UNKNOWN;
+			g_error_free (error);
+		} else {
+			g_string_printf (nmc->return_text, _("Error: NetworkManager is not running."));
+			nmc->return_value = NMC_RESULT_ERROR_NM_NOT_RUNNING;
+		}
+		goto error;
+	}
+
+	/* Print headers */
 	nmc->print_fields.flags = multiline_flag | mode_flag | escape_flag | NMC_PF_FLAG_MAIN_HEADER_ADD | NMC_PF_FLAG_FIELD_NAMES;
 	nmc->print_fields.header_name = _("Active connections");
 	print_fields (nmc->print_fields, nmc->allowed_fields);
 
+	nmc->get_client (nmc);
+	active_cons = nm_client_get_active_connections (nmc->client);
 	if (active_cons && active_cons->len) {
 		info = g_malloc0 (sizeof (StatusInfo));
 		info->nmc = nmc;
@@ -675,7 +684,6 @@ do_connections_status (NmCli *nmc, int argc, char **argv)
 	}
 
 error:
-
 	return nmc->return_value;
 }
 
@@ -886,6 +894,60 @@ check_olpc_mesh_compatible (NMDeviceOlpcMesh *device, NMConnection *connection, 
 #endif
 
 static gboolean
+check_gsm_compatible (NMGsmDevice *device, NMConnection *connection, GError **error)
+{
+	NMSettingConnection *s_con;
+	NMSettingGsm *s_gsm;
+
+	g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+
+	s_con = NM_SETTING_CONNECTION (nm_connection_get_setting (connection, NM_TYPE_SETTING_CONNECTION));
+	g_assert (s_con);
+
+	if (strcmp (nm_setting_connection_get_connection_type (s_con), NM_SETTING_GSM_SETTING_NAME)) {
+		g_set_error (error, 0, 0,
+		             "The connection was not a GSM connection.");
+		return FALSE;
+	}
+
+	s_gsm = NM_SETTING_GSM (nm_connection_get_setting (connection, NM_TYPE_SETTING_GSM));
+	if (!s_gsm) {
+		g_set_error (error, 0, 0,
+		             "The connection was not a valid GSM connection.");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+static gboolean
+check_cdma_compatible (NMCdmaDevice *device, NMConnection *connection, GError **error)
+{
+	NMSettingConnection *s_con;
+	NMSettingCdma *s_cdma;
+
+	g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+
+	s_con = NM_SETTING_CONNECTION (nm_connection_get_setting (connection, NM_TYPE_SETTING_CONNECTION));
+	g_assert (s_con);
+
+	if (strcmp (nm_setting_connection_get_connection_type (s_con), NM_SETTING_CDMA_SETTING_NAME)) {
+		g_set_error (error, 0, 0,
+		             "The connection was not a CDMA connection.");
+		return FALSE;
+	}
+
+	s_cdma = NM_SETTING_CDMA (nm_connection_get_setting (connection, NM_TYPE_SETTING_CDMA));
+	if (!s_cdma) {
+		g_set_error (error, 0, 0,
+		             "The connection was not a valid CDMA connection.");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+static gboolean
 nm_device_is_connection_compatible (NMDevice *device, NMConnection *connection, GError **error)
 {
 	g_return_val_if_fail (NM_IS_DEVICE (device), FALSE);
@@ -899,6 +961,10 @@ nm_device_is_connection_compatible (NMDevice *device, NMConnection *connection, 
 		return check_bt_compatible (NM_DEVICE_BT (device), connection, error);
 //	else if (NM_IS_DEVICE_OLPC_MESH (device))
 //		return check_olpc_mesh_compatible (NM_DEVICE_OLPC_MESH (device), connection, error);
+	else if (NM_IS_GSM_DEVICE (device))
+		return check_gsm_compatible (NM_GSM_DEVICE (device), connection, error);
+	else if (NM_IS_CDMA_DEVICE (device))
+		return check_cdma_compatible (NM_CDMA_DEVICE (device), connection, error);
 
 	g_set_error (error, 0, 0, "unhandled device type '%s'", G_OBJECT_TYPE_NAME (device));
 	return FALSE;
@@ -1401,9 +1467,20 @@ do_connection_up (NmCli *nmc, int argc, char **argv)
 		goto error;
 	}
 
-	/* create NMClient */
-	if (!nmc->get_client (nmc))
+	if (!nmc_is_nm_running (nmc, &error)) {
+		if (error) {
+			g_string_printf (nmc->return_text, _("Error: Can't find out if NetworkManager is running: %s."), error->message);
+			nmc->return_value = NMC_RESULT_ERROR_UNKNOWN;
+			g_error_free (error);
+		} else {
+			g_string_printf (nmc->return_text, _("Error: NetworkManager is not running."));
+			nmc->return_value = NMC_RESULT_ERROR_NM_NOT_RUNNING;
+		}
 		goto error;
+	}
+
+	/* create NMClient */
+	nmc->get_client (nmc);
 
 	is_system = (nm_connection_get_scope (connection) == NM_CONNECTION_SCOPE_SYSTEM) ? TRUE : FALSE;
 	con_path = nm_connection_get_path (connection);
@@ -1420,6 +1497,7 @@ do_connection_up (NmCli *nmc, int argc, char **argv)
 		else
 			g_string_printf (nmc->return_text, _("Error: No suitable device found."));
 		nmc->return_value = NMC_RESULT_ERROR_CON_ACTIVATION;
+		g_clear_error (&error);
 		goto error;
 	}
 
@@ -1446,6 +1524,7 @@ do_connection_down (NmCli *nmc, int argc, char **argv)
 {
 	NMConnection *connection = NULL;
 	NMActiveConnection *active = NULL;
+	GError *error = NULL;
 	const GPtrArray *active_cons;
 	const char *con_path;
 	const char *active_path;
@@ -1491,9 +1570,20 @@ do_connection_down (NmCli *nmc, int argc, char **argv)
 		goto error;
 	}
 
-	/* create NMClient */
-	if (!nmc->get_client (nmc))
+	if (!nmc_is_nm_running (nmc, &error)) {
+		if (error) {
+			g_string_printf (nmc->return_text, _("Error: Can't find out if NetworkManager is running: %s."), error->message);
+			nmc->return_value = NMC_RESULT_ERROR_UNKNOWN;
+			g_error_free (error);
+		} else {
+			g_string_printf (nmc->return_text, _("Error: NetworkManager is not running."));
+			nmc->return_value = NMC_RESULT_ERROR_NM_NOT_RUNNING;
+		}
 		goto error;
+	}
+
+	/* create NMClient */
+	nmc->get_client (nmc);
 
 	con_path = nm_connection_get_path (connection);
 	con_scope = nm_connection_get_scope (connection);

@@ -15,7 +15,7 @@
  * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
- * Copyright (C) 2008 - 2010 Red Hat, Inc.
+ * Copyright (C) 2008 - 2011 Red Hat, Inc.
  */
 
 #include <stdio.h>
@@ -27,8 +27,6 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
-#include <dbus/dbus-glib.h>
-
 #include <nm-utils.h>
 #include <nm-setting-connection.h>
 #include <nm-setting-wired.h>
@@ -39,6 +37,7 @@
 #include <nm-setting-serial.h>
 #include <nm-setting-ppp.h>
 #include <nm-setting-gsm.h>
+#include <nm-setting-8021x.h>
 
 #include "nm-test-helpers.h"
 
@@ -1448,7 +1447,6 @@ test_read_bt_dun_connection (void)
 	NMSettingConnection *s_con;
 	NMSettingBluetooth *s_bluetooth;
 	NMSettingSerial *s_serial;
-	NMSettingPPP *s_ppp;
 	NMSettingGsm *s_gsm;
 	GError *error = NULL;
 	const GByteArray *array;
@@ -1595,14 +1593,6 @@ test_read_bt_dun_connection (void)
 	        TEST_BT_DUN_FILE,
 	        NM_SETTING_SERIAL_SETTING_NAME);
 
-	/* ===== PPP SETTING ===== */
-
-	s_ppp = NM_SETTING_PPP (nm_connection_get_setting (connection, NM_TYPE_SETTING_PPP));
-	ASSERT (s_ppp != NULL,
-	        "connection-verify-ppp", "failed to verify %s: missing %s setting",
-	        TEST_BT_DUN_FILE,
-	        NM_SETTING_PPP_SETTING_NAME);
-
 	g_object_unref (connection);
 }
 
@@ -1691,13 +1681,6 @@ test_write_bt_dun_connection (void)
 	              NM_SETTING_GSM_NUMBER,  "*99#",
 	              NULL);
 
-	/* Serial setting */
-	nm_connection_add_setting (connection, nm_setting_serial_new ());
-
-	/* PPP setting */
-	nm_connection_add_setting (connection, nm_setting_ppp_new ());
-
-
 	/* Write out the connection */
 	owner_uid = geteuid ();
 	owner_grp = getegid ();
@@ -1732,7 +1715,6 @@ test_read_gsm_connection (void)
 	NMConnection *connection;
 	NMSettingConnection *s_con;
 	NMSettingSerial *s_serial;
-	NMSettingPPP *s_ppp;
 	NMSettingGsm *s_gsm;
 	NMSetting *s_bluetooth;
 	GError *error = NULL;
@@ -1874,14 +1856,6 @@ test_read_gsm_connection (void)
 	        TEST_GSM_FILE,
 	        NM_SETTING_SERIAL_SETTING_NAME);
 
-	/* ===== PPP SETTING ===== */
-
-	s_ppp = NM_SETTING_PPP (nm_connection_get_setting (connection, NM_TYPE_SETTING_PPP));
-	ASSERT (s_ppp != NULL,
-	        "connection-verify-ppp", "failed to verify %s: missing %s setting",
-	        TEST_GSM_FILE,
-	        NM_SETTING_PPP_SETTING_NAME);
-
 	g_object_unref (connection);
 }
 
@@ -1953,13 +1927,6 @@ test_write_gsm_connection (void)
 	              NM_SETTING_GSM_NETWORK_TYPE, NM_SETTING_GSM_NETWORK_TYPE_PREFER_UMTS_HSPA,
 	              NULL);
 
-	/* Serial setting */
-	nm_connection_add_setting (connection, nm_setting_serial_new ());
-
-	/* PPP setting */
-	nm_connection_add_setting (connection, nm_setting_ppp_new ());
-
-
 	/* Write out the connection */
 	owner_uid = geteuid ();
 	owner_grp = getegid ();
@@ -1986,14 +1953,368 @@ test_write_gsm_connection (void)
 	g_object_unref (connection);
 }
 
+#define TEST_WIRED_TLS_OLD_FILE TEST_KEYFILES_DIR"/Test_Wired_TLS_Old"
+
+static void
+test_read_wired_8021x_tls_old_connection (void)
+{
+	NMConnection *connection;
+	NMSetting *s_wired;
+	NMSetting8021x *s_8021x;
+	GError *error = NULL;
+	const char *tmp;
+	gboolean success;
+
+	connection = connection_from_file (TEST_WIRED_TLS_OLD_FILE, &error);
+	if (connection == NULL) {
+		g_assert (error);
+		g_warning ("Failed to read %s: %s", TEST_WIRED_TLS_OLD_FILE, error->message);
+		g_assert (connection);
+	}
+
+	success = nm_connection_verify (connection, &error);
+	if (!success) {
+		g_assert (error);
+		g_warning ("Failed to verify %s: %s", TEST_WIRED_TLS_OLD_FILE, error->message);
+		g_assert (success);
+	}
+
+	/* ===== Wired Setting ===== */
+	s_wired = nm_connection_get_setting (connection, NM_TYPE_SETTING_WIRED);
+	g_assert (s_wired != NULL);
+
+	/* ===== 802.1x Setting ===== */
+	s_8021x = (NMSetting8021x *) nm_connection_get_setting (connection, NM_TYPE_SETTING_802_1X);
+	g_assert (s_8021x != NULL);
+
+	g_assert (nm_setting_802_1x_get_num_eap_methods (s_8021x) == 1);
+	tmp = nm_setting_802_1x_get_eap_method (s_8021x, 0);
+	g_assert (g_strcmp0 (tmp, "tls") == 0);
+
+	tmp = nm_setting_802_1x_get_identity (s_8021x);
+	g_assert (g_strcmp0 (tmp, "Bill Smith") == 0);
+
+	tmp = nm_setting_802_1x_get_private_key_password (s_8021x);
+	g_assert (g_strcmp0 (tmp, "12345testing") == 0);
+
+	tmp = nm_setting_802_1x_get_ca_cert_path (s_8021x);
+	g_assert (g_strcmp0 (tmp, "/home/dcbw/Desktop/certinfra/CA/eaptest_ca_cert.pem") == 0);
+
+	tmp = nm_setting_802_1x_get_client_cert_path (s_8021x);
+	g_assert (g_strcmp0 (tmp, "/home/dcbw/Desktop/certinfra/client.pem") == 0);
+
+	tmp = nm_setting_802_1x_get_private_key_path (s_8021x);
+	g_assert (g_strcmp0 (tmp, "/home/dcbw/Desktop/certinfra/client.pem") == 0);
+
+	g_object_unref (connection);
+}
+
+#define TEST_WIRED_TLS_NEW_FILE TEST_KEYFILES_DIR"/Test_Wired_TLS_New"
+
+static void
+test_read_wired_8021x_tls_new_connection (void)
+{
+	NMConnection *connection;
+	NMSetting *s_wired;
+	NMSetting8021x *s_8021x;
+	GError *error = NULL;
+	const char *tmp;
+	gboolean success;
+
+	connection = connection_from_file (TEST_WIRED_TLS_NEW_FILE, &error);
+	if (connection == NULL) {
+		g_assert (error);
+		g_warning ("Failed to read %s: %s", TEST_WIRED_TLS_NEW_FILE, error->message);
+		g_assert (connection);
+	}
+
+	success = nm_connection_verify (connection, &error);
+	if (!success) {
+		g_assert (error);
+		g_warning ("Failed to verify %s: %s", TEST_WIRED_TLS_NEW_FILE, error->message);
+		g_assert (success);
+	}
+
+	/* ===== Wired Setting ===== */
+	s_wired = nm_connection_get_setting (connection, NM_TYPE_SETTING_WIRED);
+	g_assert (s_wired != NULL);
+
+	/* ===== 802.1x Setting ===== */
+	s_8021x = (NMSetting8021x *) nm_connection_get_setting (connection, NM_TYPE_SETTING_802_1X);
+	g_assert (s_8021x != NULL);
+
+	g_assert (nm_setting_802_1x_get_num_eap_methods (s_8021x) == 1);
+	tmp = nm_setting_802_1x_get_eap_method (s_8021x, 0);
+	g_assert (g_strcmp0 (tmp, "tls") == 0);
+
+	tmp = nm_setting_802_1x_get_identity (s_8021x);
+	g_assert (g_strcmp0 (tmp, "Bill Smith") == 0);
+
+	tmp = nm_setting_802_1x_get_private_key_password (s_8021x);
+	g_assert (g_strcmp0 (tmp, "12345testing") == 0);
+
+	tmp = nm_setting_802_1x_get_ca_cert_path (s_8021x);
+	g_assert (g_strcmp0 (tmp, "test-ca-cert.pem") == 0);
+
+	tmp = nm_setting_802_1x_get_client_cert_path (s_8021x);
+	g_assert (g_strcmp0 (tmp, "test-key-and-cert.pem") == 0);
+
+	tmp = nm_setting_802_1x_get_private_key_path (s_8021x);
+	g_assert (g_strcmp0 (tmp, "test-key-and-cert.pem") == 0);
+
+	g_object_unref (connection);
+}
+
+#define TEST_WIRED_TLS_CA_CERT TEST_KEYFILES_DIR"/test-ca-cert.pem"
+#define TEST_WIRED_TLS_CLIENT_CERT TEST_KEYFILES_DIR"/test-key-and-cert.pem"
+#define TEST_WIRED_TLS_PRIVKEY TEST_KEYFILES_DIR"/test-key-and-cert.pem"
+
+static NMConnection *
+create_wired_tls_connection (NMSetting8021xCKScheme scheme)
+{
+	NMConnection *connection;
+	NMSettingConnection *s_con;
+	NMSettingIP4Config *s_ip4;
+	NMSetting *s_wired;
+	NMSetting8021x *s_8021x;
+	char *uuid;
+	gboolean success;
+	GError *error = NULL;
+
+	connection = nm_connection_new ();
+	g_assert (connection != NULL);
+
+	/* Connection setting */
+	s_con = (NMSettingConnection *) nm_setting_connection_new ();
+	g_assert (s_con);
+	nm_connection_add_setting (connection, NM_SETTING (s_con));
+
+	uuid = nm_utils_uuid_generate ();
+	g_object_set (s_con,
+	              NM_SETTING_CONNECTION_ID, "Wired Really Secure TLS",
+	              NM_SETTING_CONNECTION_UUID, uuid,
+	              NM_SETTING_CONNECTION_TYPE, NM_SETTING_WIRED_SETTING_NAME,
+	              NULL);
+	g_free (uuid);
+
+	/* IP4 setting */
+	s_ip4 = (NMSettingIP4Config *) nm_setting_ip4_config_new ();
+	g_assert (s_ip4);
+	g_object_set (s_ip4, NM_SETTING_IP4_CONFIG_METHOD, NM_SETTING_IP4_CONFIG_METHOD_AUTO, NULL);
+	nm_connection_add_setting (connection, NM_SETTING (s_ip4));
+
+	/* Wired setting */
+	s_wired = nm_setting_wired_new ();
+	g_assert (s_wired);
+	nm_connection_add_setting (connection, s_wired);
+
+	/* 802.1x setting */
+	s_8021x = (NMSetting8021x *) nm_setting_802_1x_new ();
+	g_assert (s_8021x);
+	nm_connection_add_setting (connection, NM_SETTING (s_8021x));
+
+	nm_setting_802_1x_add_eap_method (s_8021x, "tls");
+	g_object_set (s_8021x, NM_SETTING_802_1X_IDENTITY, "Bill Smith", NULL);
+
+	success = nm_setting_802_1x_set_ca_cert (s_8021x,
+	                                         TEST_WIRED_TLS_CA_CERT,
+	                                         scheme,
+	                                         NULL,
+	                                         &error);
+	if (!success) {
+		g_assert (error);
+		g_warning ("Failed to set CA cert %s: %s", TEST_WIRED_TLS_CA_CERT, error->message);
+		g_assert (success);
+	}
+
+	success = nm_setting_802_1x_set_client_cert (s_8021x,
+	                                             TEST_WIRED_TLS_CLIENT_CERT,
+	                                             scheme,
+	                                             NULL,
+	                                             &error);
+	if (!success) {
+		g_assert (error);
+		g_warning ("Failed to set client cert %s: %s", TEST_WIRED_TLS_CA_CERT, error->message);
+		g_assert (success);
+	}
+
+	success = nm_setting_802_1x_set_private_key (s_8021x,
+	                                             TEST_WIRED_TLS_PRIVKEY,
+	                                             "test1",
+	                                             scheme,
+	                                             NULL,
+	                                             &error);
+	if (!success) {
+		g_assert (error);
+		g_warning ("Failed to set private key %s: %s", TEST_WIRED_TLS_CA_CERT, error->message);
+		g_assert (success);
+	}
+
+	return connection;
+}
+
+static void
+test_write_wired_8021x_tls_connection_path (void)
+{
+	NMConnection *connection;
+	char *tmp;
+	gboolean success;
+	NMConnection *reread;
+	char *testfile = NULL;
+	GError *error = NULL;
+	GKeyFile *keyfile;
+
+	connection = create_wired_tls_connection (NM_SETTING_802_1X_CK_SCHEME_PATH);
+	g_assert (connection != NULL);
+
+	/* Write out the connection */
+	success = write_connection (connection, TEST_SCRATCH_DIR, geteuid (), getegid (), &testfile, &error);
+	if (!success) {
+		g_assert (error);
+		g_warning ("Failed to write keyfile: %s", error->message);
+		g_assert (success);
+	}
+	g_assert (testfile);
+
+	/* Read the connection back in and compare it to the one we just wrote out */
+	reread = connection_from_file (testfile, &error);
+	if (!reread) {
+		g_assert (error);
+		g_warning ("Failed to re-read test connection: %s", error->message);
+		g_assert (reread);
+	}
+
+	success = nm_connection_compare (connection, reread, NM_SETTING_COMPARE_FLAG_EXACT);
+	if (!reread) {
+		g_warning ("Written and re-read connection weren't the same");
+		g_assert (success);
+	}
+
+	/* Ensure the cert and key values are properly written out */
+	keyfile = g_key_file_new ();
+	g_assert (keyfile);
+	success = g_key_file_load_from_file (keyfile, testfile, G_KEY_FILE_NONE, &error);
+	if (!success) {
+		g_assert (error);
+		g_warning ("Failed to re-read test file %s: %s", testfile, error->message);
+		g_assert (success);
+	}
+
+	/* CA cert */
+	tmp = g_key_file_get_string (keyfile,
+	                             NM_SETTING_802_1X_SETTING_NAME,
+	                             NM_SETTING_802_1X_CA_CERT,
+	                             NULL);
+	g_assert (g_strcmp0 (tmp, TEST_WIRED_TLS_CA_CERT) == 0);
+	g_free (tmp);
+
+	/* Client cert */
+	tmp = g_key_file_get_string (keyfile,
+	                             NM_SETTING_802_1X_SETTING_NAME,
+	                             NM_SETTING_802_1X_CLIENT_CERT,
+	                             NULL);
+	g_assert (g_strcmp0 (tmp, TEST_WIRED_TLS_CLIENT_CERT) == 0);
+	g_free (tmp);
+
+	/* Private key */
+	tmp = g_key_file_get_string (keyfile,
+	                             NM_SETTING_802_1X_SETTING_NAME,
+	                             NM_SETTING_802_1X_PRIVATE_KEY,
+	                             NULL);
+	g_assert (g_strcmp0 (tmp, TEST_WIRED_TLS_PRIVKEY) == 0);
+	g_free (tmp);
+
+	g_key_file_free (keyfile);
+	unlink (testfile);
+	g_free (testfile);
+
+	g_object_unref (reread);
+	g_object_unref (connection);
+}
+
+static void
+test_write_wired_8021x_tls_connection_blob (void)
+{
+	NMConnection *connection;
+	NMSettingConnection *s_con;
+	NMSetting8021x *s_8021x;
+	gboolean success;
+	NMConnection *reread;
+	char *testfile = NULL;
+	char *new_ca_cert;
+	char *new_client_cert;
+	char *new_priv_key;
+	const char *uuid;
+	GError *error = NULL;
+
+	connection = create_wired_tls_connection (NM_SETTING_802_1X_CK_SCHEME_BLOB);
+	g_assert (connection != NULL);
+
+	/* Write out the connection */
+	success = write_connection (connection, TEST_SCRATCH_DIR, geteuid (), getegid (), &testfile, &error);
+	if (!success) {
+		g_assert (error);
+		g_warning ("Failed to write keyfile: %s", error->message);
+		g_assert (success);
+	}
+	g_assert (testfile);
+
+	/* Check that the new certs got written out */
+	s_con = (NMSettingConnection *) nm_connection_get_setting (connection, NM_TYPE_SETTING_CONNECTION);
+	g_assert (s_con);
+	uuid = nm_setting_connection_get_uuid (s_con);
+	g_assert (uuid);
+
+	new_ca_cert = g_strdup_printf ("%s/%s-ca-cert.der", TEST_SCRATCH_DIR, uuid);
+	g_assert (new_ca_cert);
+	g_assert (g_file_test (new_ca_cert, G_FILE_TEST_EXISTS));
+
+	new_client_cert = g_strdup_printf ("%s/%s-client-cert.der", TEST_SCRATCH_DIR, uuid);
+	g_assert (new_client_cert);
+	g_assert (g_file_test (new_client_cert, G_FILE_TEST_EXISTS));
+
+	new_priv_key = g_strdup_printf ("%s/%s-private-key.pem", TEST_SCRATCH_DIR, uuid);
+	g_assert (new_priv_key);
+	g_assert (g_file_test (new_priv_key, G_FILE_TEST_EXISTS));
+
+	/* Read the connection back in and compare it to the one we just wrote out */
+	reread = connection_from_file (testfile, &error);
+	if (!reread) {
+		g_assert (error);
+		g_warning ("Failed to re-read test connection: %s", error->message);
+		g_assert (reread);
+	}
+
+	/* Ensure the re-read connection's certificates use the path scheme */
+	s_8021x = (NMSetting8021x *) nm_connection_get_setting (reread, NM_TYPE_SETTING_802_1X);
+	g_assert (s_8021x);
+	g_assert (nm_setting_802_1x_get_ca_cert_scheme (s_8021x) == NM_SETTING_802_1X_CK_SCHEME_PATH);
+	g_assert (nm_setting_802_1x_get_client_cert_scheme (s_8021x) == NM_SETTING_802_1X_CK_SCHEME_PATH);
+	g_assert (nm_setting_802_1x_get_private_key_scheme (s_8021x) == NM_SETTING_802_1X_CK_SCHEME_PATH);
+
+	unlink (testfile);
+	g_free (testfile);
+
+	/* Clean up written certs */
+	unlink (new_ca_cert);
+	g_free (new_ca_cert);
+
+	unlink (new_client_cert);
+	g_free (new_client_cert);
+
+	unlink (new_priv_key);
+	g_free (new_priv_key);
+
+	g_object_unref (reread);
+	g_object_unref (connection);
+}
+
 int main (int argc, char **argv)
 {
 	GError *error = NULL;
-	DBusGConnection *bus;
 	char *base;
 
 	g_type_init ();
-	bus = dbus_g_bus_get (DBUS_BUS_SESSION, NULL);
 
 	if (!nm_utils_init (&error))
 		FAIL ("nm-utils-init", "failed to initialize libnm-util: %s", error->message);
@@ -2019,10 +2340,14 @@ int main (int argc, char **argv)
 	test_read_gsm_connection ();
 	test_write_gsm_connection ();
 
+	test_read_wired_8021x_tls_old_connection ();
+	test_read_wired_8021x_tls_new_connection ();
+	test_write_wired_8021x_tls_connection_path ();
+	test_write_wired_8021x_tls_connection_blob ();
+
 	base = g_path_get_basename (argv[0]);
 	fprintf (stdout, "%s: SUCCESS\n", base);
 	g_free (base);
-	dbus_g_connection_unref (bus);
 	return 0;
 }
 

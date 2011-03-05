@@ -1,6 +1,16 @@
 AC_PREREQ(2.52)
 
-AC_INIT(NetworkManager, 0.8.2, dcbw@redhat.com, NetworkManager)
+dnl The NM version number
+m4_define([nm_major_version], [0])
+m4_define([nm_minor_version], [8])
+m4_define([nm_micro_version], [3])
+m4_define([nm_nano_version],  [997])
+m4_define([nm_version],
+          [nm_major_version.nm_minor_version.nm_micro_version.nm_nano_version])
+
+AC_INIT([NetworkManager], [nm_version],
+        [http://bugzilla.gnome.org/enter_bug.cgi?product=NetworkManager],
+        [NetworkManager])
 AM_INIT_AUTOMAKE([1.9 subdir-objects tar-ustar no-dist-gzip dist-bzip2])
 m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([no])])
 AM_MAINTAINER_MODE
@@ -30,11 +40,21 @@ AC_SUBST([ACLOCAL_AMFLAGS])
 
 dnl maintainer mode stuff
 if test $USE_MAINTAINER_MODE = yes; then
-	DISABLE_DEPRECATED="-DG_DISABLE_DEPRECATED -DGCONF_DISABLE_DEPRECATED"
+	DISABLE_DEPRECATED="-DG_DISABLE_DEPRECATED"
 else
 	DISABLE_DEPRECATED=""
 fi
 AC_SUBST(DISABLE_DEPRECATED)
+
+dnl Version stuff
+NM_MAJOR_VERSION=nm_major_version
+NM_MINOR_VERSION=nm_minor_version
+NM_MICRO_VERSION=nm_micro_version
+NM_VERSION=nm_version
+AC_SUBST(NM_MAJOR_VERSION)
+AC_SUBST(NM_MINOR_VERSION)
+AC_SUBST(NM_MICRO_VERSION)
+AC_SUBST(NM_VERSION)
 
 dnl
 dnl Required headers
@@ -84,7 +104,7 @@ dnl Make sha1.c happy on big endian systems
 dnl
 AC_C_BIGENDIAN
 
-AC_ARG_WITH(distro, AS_HELP_STRING([--with-distro=DISTRO], [Specify the Linux distribution to target: One of redhat, suse, gentoo, debian, arch, slackware, paldo, mandriva, pardus or linexa]))
+AC_ARG_WITH(distro, AS_HELP_STRING([--with-distro=DISTRO], [Specify the Linux distribution to target: One of redhat, suse, gentoo, debian, arch, slackware, paldo, mandriva, pardus, linexa or exherbo]))
 if test "z$with_distro" = "z"; then
 	AC_CHECK_FILE(/etc/redhat-release,with_distro="redhat")
 	AC_CHECK_FILE(/etc/SuSE-release,with_distro="suse")
@@ -97,6 +117,7 @@ if test "z$with_distro" = "z"; then
 	AC_CHECK_FILE(/etc/mandriva-release,with_distro="mandriva")
 	AC_CHECK_FILE(/etc/pardus-release,with_distro="pardus")
 	AC_CHECK_FILE(/etc/linexa-release,with_distro="linexa")
+	AC_CHECK_FILE(/etc/exherbo-release,with_distro="exherbo")
 	if test "z$with_distro" = "z"; then
 		with_distro=`lsb_release -is`
 	fi
@@ -108,7 +129,7 @@ if test "z$with_distro" = "z"; then
 	exit 1
 else
 	case $with_distro in
-		redhat|suse|gentoo|debian|slackware|arch|paldo|frugalware|mandriva|pardus|linexa) ;;
+		redhat|suse|gentoo|debian|slackware|arch|paldo|frugalware|mandriva|pardus|linexa|exherbo) ;;
 		*)
 			echo "Your distribution (${with_distro}) is not yet supported!  (patches welcome)"
 			exit 1
@@ -169,6 +190,11 @@ fi
 AM_CONDITIONAL(TARGET_LINEXA, test x"$with_distro" = xlinexa)
 if test x"$with_distro" = xlinexa; then
   AC_DEFINE(TARGET_LINEXA, 1, [Define if you have linexa])
+fi
+
+AM_CONDITIONAL(TARGET_EXHERBO, test x"$with_distro" = xexherbo)
+if test x"$with_distro" = xexherbo; then
+  AC_DEFINE(TARGET_EXHERBO, 1, [Define if you have Exherbo])
 fi
 
 dnl
@@ -275,6 +301,20 @@ with_nss=no
 with_gnutls=no
 if test x"$ac_crypto" = xnss; then
   PKG_CHECK_MODULES(NSS, [nss >= 3.11])
+
+  # Work around a pkg-config bug (fdo #29801) where exists != usable
+  AC_PATH_PROG(PKGCONFIG_PATH, pkg-config, no)
+  if test x"$PKGCONFIG_PATH" = xno; then
+    AC_MSG_ERROR([pkgconfig required but not found])
+  else
+    FOO=`$PKGCONFIG_PATH --cflags --libs nss`
+    if test x"$?" != "x0"; then
+      AC_MSG_ERROR([No usable NSS found])
+    fi
+  fi
+
+  AC_SUBST(NSS_CFLAGS)
+  AC_SUBST(NSS_LIBS)
   AC_DEFINE(HAVE_NSS, 1, [Define if you have NSS])
   with_nss=yes
 elif test x"$ac_crypto" = xgnutls; then
@@ -291,7 +331,7 @@ elif test x"$ac_crypto" = xgnutls; then
     with_gnutls=yes
   fi
 else
-  AC_MSG_ERROR([Please choose either 'nss' or 'gnutls' for certificate and key operations])
+  AC_MSG_ERROR([Please choose either 'nss' or 'gnutls' for certificate and crypto operations])
 fi
 AM_CONDITIONAL(WITH_NSS, test x"$with_nss" != xno)
 AM_CONDITIONAL(WITH_GNUTLS, test x"$with_gnutls" != xno)
@@ -313,9 +353,16 @@ else
 fi
 AC_SUBST(DBUS_SYS_DIR)
 
-# PPPD
-AC_CHECK_HEADERS(pppd/pppd.h,,
-  AC_MSG_ERROR(couldn't find pppd.h. pppd development headers are required.))
+# pppd
+AC_ARG_ENABLE(ppp, AC_HELP_STRING([--enable-ppp], [enable PPP/PPPoE support]),
+                     [enable_ppp=${enableval}], [enable_ppp=yes])
+if (test "${enable_ppp}" = "yes"); then
+	AC_CHECK_HEADERS(pppd/pppd.h,,
+		AC_MSG_ERROR(couldn't find pppd.h. pppd development headers are required.))
+
+	AC_DEFINE(WITH_PPP, 1, [Define if you have PPP support])
+fi
+AM_CONDITIONAL(WITH_PPP, test "${enable_ppp}" = "yes")
 
 AC_ARG_WITH([pppd-plugin-dir], AS_HELP_STRING([--with-pppd-plugin-dir=DIR], [path to the pppd plugins directory]))
 
@@ -325,6 +372,7 @@ else
 	PPPD_PLUGIN_DIR="${libdir}/pppd/2.4.5"
 fi
 AC_SUBST(PPPD_PLUGIN_DIR)
+
 
 # dhclient support
 AC_ARG_WITH([dhclient], AS_HELP_STRING([--with-dhclient=yes|no|path], [Enable dhclient 4.x support]))
@@ -491,6 +539,7 @@ esac
 AC_CONFIG_FILES([
 Makefile
 include/Makefile
+include/nm-version.h
 src/Makefile
 src/tests/Makefile
 marshallers/Makefile
@@ -498,6 +547,7 @@ src/logging/Makefile
 src/dns-manager/Makefile
 src/vpn-manager/Makefile
 src/dhcp-manager/Makefile
+src/dhcp-manager/tests/Makefile
 src/ip6-manager/Makefile
 src/supplicant-manager/Makefile
 src/supplicant-manager/tests/Makefile
@@ -595,6 +645,12 @@ if test -n "${with_systemdsystemunitdir}"; then
 	echo systemd support: ${with_systemdsystemunitdir}
 else
 	echo systemd support: no
+fi
+
+if test "${enable_ppp}" = "yes"; then
+	echo PPP support: yes
+else
+	echo PPP support: no
 fi
 
 echo
